@@ -1,0 +1,6 @@
+@growy_server_HostAddress = http://localhost:5274
+
+GET {{growy_server_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###
