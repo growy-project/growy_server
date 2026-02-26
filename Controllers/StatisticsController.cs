@@ -6,7 +6,7 @@ namespace growy_server.Controllers
 {
     [ApiController]
     [Route("[controller]")]
-    public class StatisticsController(IStatisticsJobService statisticsJobService) : ControllerBase
+    public class StatisticsController(IStatisticsJobService statisticsJobService, IStatisticsService statisticsService) : ControllerBase
     {
         [HttpPost("start")]
         public IActionResult StartJob([FromBody] StartStatisticJobParameters parameters)
@@ -14,6 +14,13 @@ namespace growy_server.Controllers
             //Missing try catch here
             var jobId = statisticsJobService.StartJob(parameters);
             return Ok(new { JobId = jobId });
+        }
+
+        [HttpGet("history/{symbol}")]
+        public async Task<IActionResult> GetSymbolHistory(string symbol, [FromQuery] string exchange)
+        {
+            var result = await statisticsService.GetSymbolHistory(symbol, exchange);
+            return Ok(result);
         }
 
         [HttpGet("status/{jobId}")]

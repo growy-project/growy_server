@@ -16,23 +16,42 @@ namespace growy_server.Services
 
             long startDate = startJobParameters.StartUnixDate * 1000;
             long endDate = startJobParameters.EndUnixDate * 1000;
+            string exchange = startJobParameters.Exchange;
 
-            var query = startJobParameters.Exchange != "CEDEAR"
-                ? db.SymbolDatePrices
-                    .Where(p => p.UnixDate >= startDate && p.UnixDate <= endDate)
-                    .Select(p => new { p.Symbol, p.ClosePrice, p.UnixDate })
-                : db.SymbolDatePriceCedears
-                    .Where(p => p.UnixDate >= startDate && p.UnixDate <= endDate)
-                    .Select(p => new { p.Symbol, p.ClosePrice, p.UnixDate });
+            string tableName = exchange != "CEDEAR" ? "symbol_date_price" : "symbol_date_price_cedears";
+            bool isCedear = exchange == "CEDEAR";
+            string whereFilter  = isCedear ? "" : "AND exchange = @exchange";
+            string joinFilterO  = isCedear ? "" : "AND o.exchange = @exchange";
+            string joinFilterN  = isCedear ? "" : "AND n.exchange = @exchange";
 
-            var grouped = await query
-                .GroupBy(p => p.Symbol)
-                .Select(g => new
-                {
-                    Symbol = g.Key,
-                    OldestPrice = g.OrderBy(p => p.UnixDate).Select(p => p.ClosePrice).First(),
-                    NewestPrice = g.OrderByDescending(p => p.UnixDate).Select(p => p.ClosePrice).First()
-                })
+            string sql = $@"
+                WITH bounds AS (
+                    SELECT symbol, MIN(unix_date) AS min_date, MAX(unix_date) AS max_date
+                    FROM {tableName}
+                    WHERE unix_date >= @startDate AND unix_date <= @endDate {whereFilter}
+                    GROUP BY symbol
+                )
+                SELECT
+                    b.symbol      AS Symbol,
+                    o.close_price AS OldestPrice,
+                    n.close_price AS NewestPrice
+                FROM bounds b
+                INNER JOIN {tableName} o
+                    ON o.symbol = b.symbol AND o.unix_date = b.min_date {joinFilterO}
+                INNER JOIN {tableName} n
+                    ON n.symbol = b.symbol AND n.unix_date = b.max_date {joinFilterN}";
+
+            var parameters = new List<object>
+            {
+                new Microsoft.Data.SqlClient.SqlParameter("@startDate", startDate),
+                new Microsoft.Data.SqlClient.SqlParameter("@endDate", endDate)
+            };
+
+            if (exchange != "CEDEAR")
+                parameters.Add(new Microsoft.Data.SqlClient.SqlParameter("@exchange", exchange));
+
+            var grouped = await db.Database
+                .SqlQueryRaw<SymbolGrowthRaw>(sql, parameters.ToArray())
                 .ToListAsync();
 
             var results = grouped
@@ -52,10 +71,6 @@ namespace growy_server.Services
                 .Where(r => r.PercentageChange > startJobParameters.MinimumExpectedGrowth)
                 .OrderByDescending(r => r.PercentageChange)
                 .ToList();
-
-            string tableName = startJobParameters.Exchange != "CEDEAR"
-                ? "symbol_date_price"
-                : "symbol_date_price_cedears";
 
             jobInfo.ProcessingMessage = "Computing volatility";
 
@@ -84,6 +99,57 @@ namespace growy_server.Services
             }
 
             return results;
+        }
+
+        public async Task<SymbolHistoryResult> GetSymbolHistory(string symbol, string exchange)
+        {
+            using var scope = scopeFactory.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<GrowyDbContext>();
+
+            List<PriceEntry> prices;
+
+            if (exchange == "CEDEAR")
+            {
+                prices = await db.SymbolDatePriceCedears
+                    .Where(p => p.Symbol == symbol)
+                    .OrderBy(p => p.UnixDate)
+                    .Select(p => new PriceEntry { ClosePrice = p.ClosePrice, UnixDate = p.UnixDate })
+                    .ToListAsync();
+            }
+            else
+            {
+                prices = await db.SymbolDatePrices
+                    .Where(p => p.Symbol == symbol && p.Exchange == exchange)
+                    .OrderBy(p => p.UnixDate)
+                    .Select(p => new PriceEntry { ClosePrice = p.ClosePrice, UnixDate = p.UnixDate })
+                    .ToListAsync();
+            }
+
+            return new SymbolHistoryResult { Symbol = symbol, Prices = prices, Ema20 = Calculate20Ema(prices) };
+        }
+
+        private static List<EmaEntry> Calculate20Ema(List<PriceEntry> prices)
+        {
+            const int period = 20;
+            var emaEntries = new List<EmaEntry>();
+
+            if (prices.Count < period)
+                return emaEntries;
+
+            double k = 2.0 / (period + 1);
+
+            // Seed: SMA(Simple Moving Average) of the first 20 closing prices
+            double ema = prices.Take(period).Average(p => p.ClosePrice);
+            emaEntries.Add(new EmaEntry { Value = ema, UnixDate = prices[period - 1].UnixDate });
+
+            // EMAₜ = Priceₜ × k + EMAₜ₋₁ × (1 − k)
+            for (int i = period; i < prices.Count; i++)
+            {
+                ema = prices[i].ClosePrice * k + ema * (1 - k);
+                emaEntries.Add(new EmaEntry { Value = ema, UnixDate = prices[i].UnixDate });
+            }
+
+            return emaEntries;
         }
 
         public async Task<List<CPVIResult>> CalculateCPVIs(GrowyDbContext db, string[] symbols, string tableName)
@@ -213,6 +279,13 @@ namespace growy_server.Services
         {
             public string Symbol { get; set; }
             public double ClosePrice { get; set; }
+        }
+
+        private class SymbolGrowthRaw
+        {
+            public string Symbol { get; set; }
+            public double OldestPrice { get; set; }
+            public double NewestPrice { get; set; }
         }
     }
 }

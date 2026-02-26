@@ -86,6 +86,60 @@ namespace growy_server.Services
             return symbols;
         }
 
+        public async Task<SymbolHistoryResult> GetSymbolHistory(string symbol, string exchange)
+        {
+            string tableName = exchange != "CEDEAR" ? "symbol_date_price" : "symbol_date_price_cedears";
+
+            await using var connection = new NpgsqlConnection(_connectionString);
+            await connection.OpenAsync();
+
+            string query = $@"
+                SELECT close_price, unix_date
+                FROM {tableName}
+                WHERE symbol = @symbol
+                ORDER BY unix_date ASC";
+
+            await using var command = new NpgsqlCommand(query, connection);
+            command.Parameters.AddWithValue("@symbol", symbol);
+
+            var prices = new List<PriceEntry>();
+            await using var reader = await command.ExecuteReaderAsync();
+            while (await reader.ReadAsync())
+            {
+                prices.Add(new PriceEntry
+                {
+                    ClosePrice = reader.GetDouble(0),
+                    UnixDate = reader.GetInt64(1)
+                });
+            }
+
+            return new SymbolHistoryResult { Symbol = symbol, Prices = prices, Ema20 = Calculate20Ema(prices) };
+        }
+
+        private static List<EmaEntry> Calculate20Ema(List<PriceEntry> prices)
+        {
+            const int period = 20;
+            var emaEntries = new List<EmaEntry>();
+
+            if (prices.Count < period)
+                return emaEntries;
+
+            double k = 2.0 / (period + 1);
+
+            // Seed: SMA of the first 20 closing prices
+            double ema = prices.Take(period).Average(p => p.ClosePrice);
+            emaEntries.Add(new EmaEntry { Value = ema, UnixDate = prices[period - 1].UnixDate });
+
+            // EMAₜ = Priceₜ × k + EMAₜ₋₁ × (1 − k)
+            for (int i = period; i < prices.Count; i++)
+            {
+                ema = prices[i].ClosePrice * k + ema * (1 - k);
+                emaEntries.Add(new EmaEntry { Value = ema, UnixDate = prices[i].UnixDate });
+            }
+
+            return emaEntries;
+        }
+
         //calculate Close Price Variation Index
         public List<CPVIResult> CalculateCPVIs(string[] symbols)
         {
