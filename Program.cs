@@ -30,6 +30,7 @@ builder.Services.AddDbContext<GrowyDbContext>(options =>
 //builder.Services.AddTransient<IStatisticsService, StatisticsService>();            // PostgreSQL + Npgsql
 builder.Services.AddTransient<IStatisticsService, SqlServerStatisticsService>();  // SQL Server + EF Core
 builder.Services.AddTransient<IStatisticsJobService, StatisticsJobService>();
+builder.Services.AddTransient<IUserService, UserService>();
 
 
 var app = builder.Build();
