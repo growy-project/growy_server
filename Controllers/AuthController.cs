@@ -1,0 +1,25 @@
+using Microsoft.AspNetCore.Mvc;
+using growy_server.Models;
+using growy_server.Services;
+
+namespace growy_server.Controllers
+{
+    [ApiController]
+    [Route("[controller]")]
+    public class AuthController(IUserService userService) : ControllerBase
+    {
+        [HttpPost("google-login")]
+        public async Task<IActionResult> GoogleLogin([FromBody] GoogleLoginRequest request)
+        {
+            try
+            {
+                var (user, token) = await userService.GoogleLoginAsync(request.IdToken);
+                return Ok(new { user, token });
+            }
+            catch (Exception ex)
+            {
+                return Unauthorized(new { message = ex.Message });
+            }
+        }
+    }
+}

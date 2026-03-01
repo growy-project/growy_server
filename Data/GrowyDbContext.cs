@@ -9,5 +9,6 @@ namespace growy_server.Data
 
         public DbSet<SymbolDatePrice> SymbolDatePrices { get; set; }
         public DbSet<SymbolDatePriceCedear> SymbolDatePriceCedears { get; set; }
+        public DbSet<UserEntity> Users { get; set; }
     }
 }
