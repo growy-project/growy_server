@@ -22,15 +22,26 @@ builder.Services.AddCors(options =>
         });
 });
 
-// DbContext for SQL Server (used by SqlServerStatisticsService)
-builder.Services.AddDbContext<GrowyDbContext>(options =>
-    options.UseSqlServer(builder.Configuration.GetConnectionString("MssqlConnection")));
+var provider = builder.Configuration["DatabaseProvider"] ?? "SqlServer";
+//Here SqlServer or Postgres
+if (provider == "Postgres")
+{
+    builder.Services.AddDbContext<GrowyDbContext>(options =>
+        options.UseNpgsql(builder.Configuration.GetConnectionString("DefaultConnection")));
+    builder.Services.AddTransient<IStatisticsService, StatisticsService>();
+    builder.Services.AddTransient<ISymbolService, PostgresSymbolService>();
+}
+else
+{
+    builder.Services.AddDbContext<GrowyDbContext>(options =>
+        options.UseSqlServer(builder.Configuration.GetConnectionString("MssqlConnection")));
+    builder.Services.AddTransient<IStatisticsService, SqlServerStatisticsService>();
+    builder.Services.AddTransient<ISymbolService, SqlServerSymbolService>();
+}
 
-// Add services to the container.
-//builder.Services.AddTransient<IStatisticsService, StatisticsService>();            // PostgreSQL + Npgsql
-builder.Services.AddTransient<IStatisticsService, SqlServerStatisticsService>();  // SQL Server + EF Core
 builder.Services.AddTransient<IStatisticsJobService, StatisticsJobService>();
 builder.Services.AddTransient<IUserService, UserService>();
+builder.Services.AddTransient<IEmailService, EmailService>();
 
 
 var app = builder.Build();
