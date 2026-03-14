@@ -49,5 +49,19 @@ namespace growy_server.Controllers
                 return NotFound(new { Message = ex.Message });
             }
         }
+
+        [HttpGet("date-range")]
+        public async Task<IActionResult> GetDateRange([FromQuery] string exchange)
+        {
+            try
+            {
+                var result = await symbolService.GetDateRange(exchange);
+                return Ok(result);
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new { Message = ex.Message });
+            }
+        }
     }
 }
