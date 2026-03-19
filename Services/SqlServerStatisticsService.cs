@@ -62,8 +62,6 @@ namespace growy_server.Services
                     PercentageChange = ((g.NewestPrice - g.OldestPrice) / g.OldestPrice) * 100,
                     OldestPrice = g.OldestPrice,
                     NewestPrice = g.NewestPrice,
-                    MarketCap = 0,
-                    EarningsPerShare = 0,
                     TargetPrice = 0,
                     Rsi = 0,
                     Volatility = 0
@@ -71,6 +69,27 @@ namespace growy_server.Services
                 .Where(r => r.PercentageChange > startJobParameters.MinimumExpectedGrowth)
                 .OrderByDescending(r => r.PercentageChange)
                 .ToList();
+
+            var symbols = results.Select(r => r.Symbol).ToList();
+            var companies = await db.Companies
+                .Where(c => symbols.Contains(c.Symbol))
+                .ToListAsync();
+            var companyMap = companies.ToDictionary(c => c.Symbol);
+
+            foreach (var result in results)
+            {
+                if (companyMap.TryGetValue(result.Symbol, out var company))
+                {
+                    result.CompanyName = company.CompanyName;
+                    result.Description = company.Description;
+                    result.Sector = company.Sector;
+                    result.MarketCapitalization = company.MarketCapitalization;
+                    result.Eps = company.Eps;
+                    result.TargetPrice = company.AnalystTargetPrice.HasValue
+                        ? (double)company.AnalystTargetPrice.Value
+                        : 0;
+                }
+            }
 
             jobInfo.ProcessingMessage = "Computing volatility";
 
