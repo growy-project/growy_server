@@ -49,8 +49,20 @@ namespace growy_server.Services
                   FROM precios_inicio i
                   JOIN precios_fin f ON i.symbol = f.symbol
                 )
-                SELECT *
-                FROM crecimientos
+                SELECT
+                    c.symbol,
+                    c.percentageChange,
+                    c.oldestPrice,
+                    c.newestPrice,
+                    co.analyst_target_price,
+                    co.eps,
+                    co.market_capitalization,
+                    co.description,
+                    co.sector,
+                    co.industry,
+                    co.company_name
+                FROM crecimientos c
+                LEFT JOIN companies co ON co.symbol = c.symbol
                 WHERE percentageChange > @Threshold
                 ORDER BY percentageChange DESC;";
 
@@ -72,11 +84,13 @@ namespace growy_server.Services
                         PercentageChange = reader.GetDouble(1),
                         OldestPrice = reader.GetDouble(2),
                         NewestPrice = reader.GetDouble(3),
-                        MarketCap = 0,
-                        EarningsPerShare = 0,
-                        TargetPrice = 0,
-                        Rsi = 0,
-                        Volatility = 0,
+                        TargetPrice = reader.IsDBNull(4) ? 0 : (double)reader.GetDecimal(4),
+                        Eps = reader.IsDBNull(5) ? null : reader.GetDecimal(5),
+                        MarketCapitalization = reader.IsDBNull(6) ? null : reader.GetDecimal(6),
+                        Description = reader.IsDBNull(7) ? null : reader.GetString(7),
+                        Sector = reader.IsDBNull(8) ? null : reader.GetString(8),
+                        Industry = reader.IsDBNull(9) ? null : reader.GetString(9),
+                        CompanyName = reader.IsDBNull(10) ? null : reader.GetString(10),
                     });
                 }
             } // reader closed before reusing the connection
