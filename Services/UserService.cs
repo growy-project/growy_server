@@ -9,7 +9,7 @@ using Microsoft.IdentityModel.Tokens;
 
 namespace growy_server.Services
 {
-    public class UserService(IServiceScopeFactory scopeFactory, IConfiguration configuration) : IUserService
+    public class UserService(GrowyDbContext db, IConfiguration configuration) : IUserService
     {
         public async Task<(UserResult user, string token)> GoogleLoginAsync(string idToken)
         {
@@ -20,9 +20,6 @@ namespace growy_server.Services
             {
                 Audience = new[] { clientId }
             });
-
-            using var scope = scopeFactory.CreateScope();
-            var db = scope.ServiceProvider.GetRequiredService<GrowyDbContext>();
 
             var user = db.Users.FirstOrDefault(u => u.Email == payload.Email);
             if (user == null)

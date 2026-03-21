@@ -1,17 +1,13 @@
 using growy_server.Data;
 using growy_server.Models;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.DependencyInjection;
 
 namespace growy_server.Services
 {
-    public class SqlServerStatisticsService(IServiceScopeFactory scopeFactory) : IStatisticsService
+    public class SqlServerStatisticsService(GrowyDbContext db) : IStatisticsService
     {
         public async Task<List<SymbolResult>> GetTopGrowth(StartStatisticJobParameters startJobParameters, StatisticJobInfo jobInfo)
         {
-            using var scope = scopeFactory.CreateScope();
-            var db = scope.ServiceProvider.GetRequiredService<GrowyDbContext>();
-
             jobInfo.ProcessingMessage = $"Retrieving stocks with expected growth > {startJobParameters.MinimumExpectedGrowth}%";
 
             long startDate = startJobParameters.StartUnixDate * 1000;
@@ -122,9 +118,6 @@ namespace growy_server.Services
 
         public async Task<SymbolHistoryResult> GetSymbolHistory(string symbol, string exchange)
         {
-            using var scope = scopeFactory.CreateScope();
-            var db = scope.ServiceProvider.GetRequiredService<GrowyDbContext>();
-
             List<PriceEntry> prices;
 
             if (exchange == "CEDEAR")

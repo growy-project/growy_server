@@ -4,13 +4,10 @@ using Microsoft.EntityFrameworkCore;
 
 namespace growy_server.Services
 {
-    public class PostgresSymbolService(IServiceScopeFactory scopeFactory) : ISymbolService
+    public class PostgresSymbolService(GrowyDbContext db) : ISymbolService
     {
         public async Task SetSymbolAsTopGrowth(string symbol, bool value)
         {
-            using var scope = scopeFactory.CreateScope();
-            var db = scope.ServiceProvider.GetRequiredService<GrowyDbContext>();
-
             var company = await db.Companies.FirstOrDefaultAsync(c => c.Symbol == symbol)
                 ?? throw new KeyNotFoundException($"Symbol '{symbol}' not found.");
 
@@ -20,9 +17,6 @@ namespace growy_server.Services
 
         public async Task SetSymbolAsToxic(string symbol, bool value)
         {
-            using var scope = scopeFactory.CreateScope();
-            var db = scope.ServiceProvider.GetRequiredService<GrowyDbContext>();
-
             var company = await db.Companies.FirstOrDefaultAsync(c => c.Symbol == symbol)
                 ?? throw new KeyNotFoundException($"Symbol '{symbol}' not found.");
 
@@ -32,9 +26,6 @@ namespace growy_server.Services
 
         public async Task<SymbolDateRangeResult> GetDateRange(string exchange)
         {
-            using var scope = scopeFactory.CreateScope();
-            var db = scope.ServiceProvider.GetRequiredService<GrowyDbContext>();
-
             if (exchange.ToUpper() == "CEDEAR")
             {
                 var firstDate = await db.SymbolDatePriceCedears.MinAsync(p => p.UnixDate);

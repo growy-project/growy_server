@@ -3,7 +3,7 @@ using Microsoft.Extensions.Caching.Memory;
 
 namespace growy_server.Services
 {
-    public class StatisticsJobService(IStatisticsService statisticsService) : IStatisticsJobService
+    public class StatisticsJobService(IServiceScopeFactory scopeFactory) : IStatisticsJobService
     {
         public const int KeepJobInListXMinutes = 5;
         public const int PollSlidingScaleXMinutes = 1;
@@ -82,6 +82,8 @@ namespace growy_server.Services
 
             try
             {
+                using var scope = scopeFactory.CreateScope();
+                var statisticsService = scope.ServiceProvider.GetRequiredService<IStatisticsService>();
                 jobInfo.Result = await statisticsService.GetTopGrowth(jobInfo.StartJobParameters, jobInfo);
 
                 //add volatility result and 50% 
