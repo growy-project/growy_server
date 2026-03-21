@@ -96,7 +96,9 @@ namespace growy_server.Services
             } // reader closed before reusing the connection
 
             jobInfo.ProcessingMessage = "Computing volatility";
-            var cpviResults = CalculateCPVIs(symbols.Select(x => x.Symbol).ToArray(), tableName, connection);
+            var cpviResults = CalculateCPVIs(symbols.Select(x => x.Symbol).ToArray(), tableName, connection,
+                startJobParameters.StartUnixDate * 1000, startJobParameters.EndUnixDate * 1000,
+                isCedear ? null : startJobParameters.Exchange);
             var cpviMap = cpviResults.ToDictionary(c => c.Symbol, c => c.CPVI);
             foreach (var s in symbols)
                 if (cpviMap.TryGetValue(s.Symbol, out var cpvi))
@@ -168,7 +170,8 @@ namespace growy_server.Services
             return emaEntries;
         }
 
-        public List<CPVIResult> CalculateCPVIs(string[] symbols, string tableName, NpgsqlConnection connection)
+        public List<CPVIResult> CalculateCPVIs(string[] symbols, string tableName, NpgsqlConnection connection,
+            long startDate = 0, long endDate = long.MaxValue, string? exchange = null)
         {
             if (symbols.Length == 0)
                 return new List<CPVIResult>();
@@ -183,6 +186,8 @@ namespace growy_server.Services
             }
 
             string inClause = string.Join(", ", paramPlaceholders);
+            string dateFilter = startDate > 0 ? "AND unix_date BETWEEN @startDate AND @endDate" : "";
+            string exchangeFilter = exchange != null ? "AND exchange = @exchange" : "";
 
             string sql = $@"
                 SELECT
@@ -201,7 +206,7 @@ namespace growy_server.Services
                         FIRST_VALUE(close_price) OVER (PARTITION BY symbol ORDER BY unix_date DESC
                             ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) AS end_price
                     FROM {tableName}
-                    WHERE symbol IN ({inClause})
+                    WHERE symbol IN ({inClause}) {dateFilter} {exchangeFilter}
                 ) sub
                 WHERE prev_price IS NOT NULL
                 GROUP BY symbol, start_price, end_price
@@ -210,6 +215,13 @@ namespace growy_server.Services
             using var command = new NpgsqlCommand(sql, connection);
             foreach (var p in parameters)
                 command.Parameters.Add(p);
+            if (startDate > 0)
+            {
+                command.Parameters.AddWithValue("@startDate", startDate);
+                command.Parameters.AddWithValue("@endDate", endDate);
+            }
+            if (exchange != null)
+                command.Parameters.AddWithValue("@exchange", exchange);
 
             var results = new List<CPVIResult>();
             using var reader = command.ExecuteReader();

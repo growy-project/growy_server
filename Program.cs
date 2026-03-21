@@ -4,8 +4,6 @@ using Microsoft.EntityFrameworkCore;
 
 var builder = WebApplication.CreateBuilder(args);
 
-
-
 builder.Services.AddControllers();
 // Learn more about configuring Swagger/OpenAPI at https://aka.ms/aspnetcore/swashbuckle
 builder.Services.AddEndpointsApiExplorer();
@@ -28,19 +26,19 @@ if (provider == "Postgres")
 {
     builder.Services.AddDbContext<GrowyDbContext>(options =>
         options.UseNpgsql(builder.Configuration.GetConnectionString("DefaultConnection")));
-    builder.Services.AddTransient<IStatisticsService, StatisticsService>();
-    builder.Services.AddTransient<ISymbolService, PostgresSymbolService>();
+    builder.Services.AddScoped<IStatisticsService, StatisticsService>();
+    builder.Services.AddScoped<ISymbolService, PostgresSymbolService>();
 }
 else
 {
     builder.Services.AddDbContext<GrowyDbContext>(options =>
         options.UseSqlServer(builder.Configuration.GetConnectionString("MssqlConnection")));
-    builder.Services.AddTransient<IStatisticsService, SqlServerStatisticsService>();
-    builder.Services.AddTransient<ISymbolService, SqlServerSymbolService>();
+    builder.Services.AddScoped<IStatisticsService, SqlServerStatisticsService>();
+    builder.Services.AddScoped<ISymbolService, SqlServerSymbolService>();
 }
 
-builder.Services.AddTransient<IStatisticsJobService, StatisticsJobService>();
-builder.Services.AddTransient<IUserService, UserService>();
+builder.Services.AddSingleton<IStatisticsJobService, StatisticsJobService>();
+builder.Services.AddScoped<IUserService, UserService>();
 builder.Services.AddTransient<IEmailService, EmailService>();
 
 
