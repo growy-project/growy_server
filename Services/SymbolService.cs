@@ -4,12 +4,12 @@ using Microsoft.EntityFrameworkCore;
 
 namespace growy_server.Services
 {
-    public class SqlServerSymbolService(GrowyDbContext db) : ISymbolService
+    public class SymbolService(GrowyDbContext db) : ISymbolService
     {
         public async Task SetSymbolAsTopGrowth(string symbol, bool value)
         {
             var company = await db.Companies.FirstOrDefaultAsync(c => c.Symbol == symbol)
-                ?? throw new KeyNotFoundException($"Symbol '{symbol}' not found in companies.");
+                ?? throw new KeyNotFoundException($"Symbol '{symbol}' not found.");
 
             company.IsTopGrowth = value;
             await db.SaveChangesAsync();
@@ -18,7 +18,7 @@ namespace growy_server.Services
         public async Task SetSymbolAsToxic(string symbol, bool value)
         {
             var company = await db.Companies.FirstOrDefaultAsync(c => c.Symbol == symbol)
-                ?? throw new KeyNotFoundException($"Symbol '{symbol}' not found in companies.");
+                ?? throw new KeyNotFoundException($"Symbol '{symbol}' not found.");
 
             company.IsToxic = value;
             await db.SaveChangesAsync();
