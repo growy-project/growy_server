@@ -9,11 +9,11 @@ namespace growy_server.Controllers
     public class SymbolController(ISymbolService symbolService, IEmailService emailService) : ControllerBase
     {
         [HttpPost("request-tag")]
-        public async Task<IActionResult> RequestTag([FromBody] TagRequestModel request)
+        public async Task<IActionResult> RequestTag([FromBody] TagRequestModel request, CancellationToken cancellationToken)
         {
             try
             {
-                await emailService.SendTagRequestAsync(request.Symbol, request.TagType, request.Reason, request.RequesterEmail);
+                await emailService.SendTagRequestAsync(request.Symbol, request.TagType, request.Reason, request.RequesterEmail, cancellationToken);
                 return NoContent();
             }
             catch (Exception ex)
@@ -23,11 +23,11 @@ namespace growy_server.Controllers
         }
 
         [HttpPut("{symbol}/top-growth")]
-        public async Task<IActionResult> SetTopGrowth(string symbol, [FromQuery] bool value)
+        public async Task<IActionResult> SetTopGrowth(string symbol, [FromQuery] bool value, CancellationToken cancellationToken)
         {
             try
             {
-                await symbolService.SetSymbolAsTopGrowth(symbol, value);
+                await symbolService.SetSymbolAsTopGrowth(symbol, value, cancellationToken);
                 return NoContent();
             }
             catch (KeyNotFoundException ex)
@@ -37,11 +37,11 @@ namespace growy_server.Controllers
         }
 
         [HttpPut("{symbol}/toxic")]
-        public async Task<IActionResult> SetToxic(string symbol, [FromQuery] bool value)
+        public async Task<IActionResult> SetToxic(string symbol, [FromQuery] bool value, CancellationToken cancellationToken)
         {
             try
             {
-                await symbolService.SetSymbolAsToxic(symbol, value);
+                await symbolService.SetSymbolAsToxic(symbol, value, cancellationToken);
                 return NoContent();
             }
             catch (KeyNotFoundException ex)
@@ -51,11 +51,11 @@ namespace growy_server.Controllers
         }
 
         [HttpGet("date-range")]
-        public async Task<IActionResult> GetDateRange([FromQuery] string exchange)
+        public async Task<IActionResult> GetDateRange([FromQuery] string exchange, CancellationToken cancellationToken)
         {
             try
             {
-                var result = await symbolService.GetDateRange(exchange);
+                var result = await symbolService.GetDateRange(exchange, cancellationToken);
                 return Ok(result);
             }
             catch (Exception ex)

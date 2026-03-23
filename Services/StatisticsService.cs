@@ -8,7 +8,7 @@ namespace growy_server.Services
         private readonly string _connectionString = configuration.GetConnectionString("DefaultConnection")
             ?? throw new InvalidOperationException("Connection string 'DefaultConnection' not found.");
 
-        public async Task<List<SymbolResult>> GetTopGrowth(StartStatisticJobParameters startJobParameters, StatisticJobInfo jobInfo)
+        public async Task<List<SymbolResult>> GetTopGrowth(StartStatisticJobParameters startJobParameters, StatisticJobInfo jobInfo, CancellationToken cancellationToken = default)
         {
             var symbols = new List<SymbolResult>();
 
@@ -17,7 +17,7 @@ namespace growy_server.Services
             string exchangeFilter = isCedear ? "" : "AND exchange = @Exchange";
 
             await using var connection = new NpgsqlConnection(_connectionString);
-            await connection.OpenAsync();
+            await connection.OpenAsync(cancellationToken);
 
             string query = $@"
                 WITH precios_filtrados AS (
@@ -74,9 +74,9 @@ namespace growy_server.Services
             if (!isCedear)
                 command.Parameters.AddWithValue("@Exchange", startJobParameters.Exchange);
 
-            await using (var reader = await command.ExecuteReaderAsync())
+            await using (var reader = await command.ExecuteReaderAsync(cancellationToken))
             {
-                while (await reader.ReadAsync())
+                while (await reader.ReadAsync(cancellationToken))
                 {
                     symbols.Add(new SymbolResult
                     {
@@ -105,7 +105,7 @@ namespace growy_server.Services
                     s.Volatility = cpvi;
 
             jobInfo.ProcessingMessage = "Computing RSI";
-            var rsiResults = await CalculateRSIs(symbols.Select(x => x.Symbol).ToArray(), tableName, connection);
+            var rsiResults = await CalculateRSIs(symbols.Select(x => x.Symbol).ToArray(), tableName, connection, cancellationToken: cancellationToken);
             var rsiMap = rsiResults.ToDictionary(r => r.Symbol, r => r.Rsi);
             foreach (var s in symbols)
                 if (rsiMap.TryGetValue(s.Symbol, out var rsi))
@@ -114,13 +114,13 @@ namespace growy_server.Services
             return symbols;
         }
 
-        public async Task<SymbolHistoryResult> GetSymbolHistory(string symbol, string exchange)
+        public async Task<SymbolHistoryResult> GetSymbolHistory(string symbol, string exchange, CancellationToken cancellationToken = default)
         {
             string tableName = exchange != "CEDEAR" ? "symbol_date_price" : "symbol_date_price_cedears";
             bool isCedear = exchange == "CEDEAR";
 
             await using var connection = new NpgsqlConnection(_connectionString);
-            await connection.OpenAsync();
+            await connection.OpenAsync(cancellationToken);
 
             string exchangeClause = isCedear ? "" : "AND exchange = @exchange";
             string query = $@"
@@ -135,8 +135,8 @@ namespace growy_server.Services
                 command.Parameters.AddWithValue("@exchange", exchange);
 
             var prices = new List<PriceEntry>();
-            await using var reader = await command.ExecuteReaderAsync();
-            while (await reader.ReadAsync())
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
             {
                 prices.Add(new PriceEntry
                 {
@@ -237,7 +237,7 @@ namespace growy_server.Services
             return results;
         }
 
-        private async Task<List<RsiResult>> CalculateRSIs(string[] symbols, string tableName, NpgsqlConnection connection, int period = 14)
+        private async Task<List<RsiResult>> CalculateRSIs(string[] symbols, string tableName, NpgsqlConnection connection, int period = 14, CancellationToken cancellationToken = default)
         {
             if (symbols.Length == 0)
                 return new List<RsiResult>();
@@ -264,8 +264,8 @@ namespace growy_server.Services
                 command.Parameters.Add(p);
 
             var rows = new List<(string Symbol, double ClosePrice)>();
-            await using var reader = await command.ExecuteReaderAsync();
-            while (await reader.ReadAsync())
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
                 rows.Add((reader.GetString(0), reader.GetDouble(1)));
 
             var results = new List<RsiResult>();

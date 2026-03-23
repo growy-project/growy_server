@@ -9,11 +9,11 @@ namespace growy_server.Controllers
     public class AuthController(IUserService userService) : ControllerBase
     {
         [HttpPost("google-login")]
-        public async Task<IActionResult> GoogleLogin([FromBody] GoogleLoginRequest request)
+        public async Task<IActionResult> GoogleLogin([FromBody] GoogleLoginRequest request, CancellationToken cancellationToken)
         {
             try
             {
-                var (user, token) = await userService.GoogleLoginAsync(request.IdToken);
+                var (user, token) = await userService.GoogleLoginAsync(request.IdToken, cancellationToken);
                 return Ok(new { user, token });
             }
             catch (Exception ex)
