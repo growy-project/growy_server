@@ -5,7 +5,7 @@ namespace growy_server.Services
 {
     public class EmailService(IConfiguration configuration) : IEmailService
     {
-        public async Task SendTagRequestAsync(string symbol, string tagType, string reason, string requesterEmail)
+        public async Task SendTagRequestAsync(string symbol, string tagType, string reason, string requesterEmail, CancellationToken cancellationToken = default)
         {
             var smtp = configuration.GetSection("Smtp");
             var host = smtp["Host"]!;
@@ -34,7 +34,7 @@ namespace growy_server.Services
             };
 
             var message = new MailMessage(from, adminEmail, subject, body);
-            await client.SendMailAsync(message);
+            await client.SendMailAsync(message, cancellationToken);
         }
     }
 }

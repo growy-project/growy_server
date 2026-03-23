@@ -5,13 +5,14 @@ using Google.Apis.Auth;
 using growy_server.Data;
 using growy_server.Models;
 using growy_server.Models.DB;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 
 namespace growy_server.Services
 {
     public class UserService(GrowyDbContext db, IConfiguration configuration) : IUserService
     {
-        public async Task<(UserResult user, string token)> GoogleLoginAsync(string idToken)
+        public async Task<(UserResult user, string token)> GoogleLoginAsync(string idToken, CancellationToken cancellationToken = default)
         {
             var clientId = configuration["Google:ClientId"]
                 ?? throw new InvalidOperationException("Google ClientId not configured");
@@ -21,7 +22,7 @@ namespace growy_server.Services
                 Audience = new[] { clientId }
             });
 
-            var user = db.Users.FirstOrDefault(u => u.Email == payload.Email);
+            var user = await db.Users.FirstOrDefaultAsync(u => u.Email == payload.Email, cancellationToken);
             if (user == null)
             {
                 user = new UserEntity
@@ -33,7 +34,7 @@ namespace growy_server.Services
                     CreatedAt = DateTime.UtcNow
                 };
                 db.Users.Add(user);
-                await db.SaveChangesAsync();
+                await db.SaveChangesAsync(cancellationToken);
             }
 
             var userResult = new UserResult

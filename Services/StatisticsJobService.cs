@@ -3,8 +3,9 @@ using Microsoft.Extensions.Caching.Memory;
 
 namespace growy_server.Services
 {
-    public class StatisticsJobService(IServiceScopeFactory scopeFactory) : IStatisticsJobService
+    public class StatisticsJobService(IServiceScopeFactory scopeFactory, IHostApplicationLifetime lifetime) : IStatisticsJobService
     {
+        private readonly IHostApplicationLifetime _lifetime = lifetime;
         public const int KeepJobInListXMinutes = 5;
         public const int PollSlidingScaleXMinutes = 1;
 
@@ -57,7 +58,7 @@ namespace growy_server.Services
 
         private void RunJob(StatisticJobInfo jobInfo)
         {
-            _ = Task.Run(() => RunInBackground(jobInfo));
+            _ = Task.Run(() => RunInBackground(jobInfo, _lifetime.ApplicationStopping));
         }
 
         private static StatisticJobInfo GetJobInfo(Guid jobId)
@@ -76,7 +77,7 @@ namespace growy_server.Services
                 throw new InvalidOperationException("Invalid job id");
         }
 
-        private async Task RunInBackground(StatisticJobInfo jobInfo)
+        private async Task RunInBackground(StatisticJobInfo jobInfo, CancellationToken cancellationToken)
         {
             Console.WriteLine("Background task started...");
 
@@ -84,7 +85,7 @@ namespace growy_server.Services
             {
                 using var scope = scopeFactory.CreateScope();
                 var statisticsService = scope.ServiceProvider.GetRequiredService<IStatisticsService>();
-                jobInfo.Result = await statisticsService.GetTopGrowth(jobInfo.StartJobParameters, jobInfo);
+                jobInfo.Result = await statisticsService.GetTopGrowth(jobInfo.StartJobParameters, jobInfo, cancellationToken);
 
                 //add volatility result and 50% 
                 jobInfo.SetJobInfoStatus(100);

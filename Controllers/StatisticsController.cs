@@ -17,9 +17,9 @@ namespace growy_server.Controllers
         }
 
         [HttpGet("history/{symbol}")]
-        public async Task<IActionResult> GetSymbolHistory(string symbol, [FromQuery] string exchange)
+        public async Task<IActionResult> GetSymbolHistory(string symbol, [FromQuery] string exchange, CancellationToken cancellationToken)
         {
-            var result = await statisticsService.GetSymbolHistory(symbol, exchange);
+            var result = await statisticsService.GetSymbolHistory(symbol, exchange, cancellationToken);
             return Ok(result);
         }
 
