@@ -53,6 +53,9 @@ namespace growy_server.Controllers
         [HttpGet("date-range")]
         public async Task<IActionResult> GetDateRange([FromQuery] string exchange, CancellationToken cancellationToken)
         {
+            if (string.IsNullOrWhiteSpace(exchange))
+                return BadRequest(new { Message = "Exchange parameter is required." });
+
             try
             {
                 var result = await symbolService.GetDateRange(exchange, cancellationToken);

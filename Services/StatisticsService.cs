@@ -1,3 +1,4 @@
+using growy_server.Calculators;
 using growy_server.Models;
 using Npgsql;
 
@@ -10,11 +11,7 @@ namespace growy_server.Services
 
         public async Task<List<SymbolResult>> GetTopGrowth(StartStatisticJobParameters startJobParameters, StatisticJobInfo jobInfo, CancellationToken cancellationToken = default)
         {
-            var symbols = new List<SymbolResult>();
-
-            string tableName = startJobParameters.Exchange != "CEDEAR" ? "symbol_date_price" : "symbol_date_price_cedears";
-            bool isCedear = startJobParameters.Exchange == "CEDEAR";
-            string exchangeFilter = isCedear ? "" : "AND exchange = @Exchange";
+            var (tableName, isCedear, exchangeFilter) = ResolveTable(startJobParameters.Exchange);
 
             await using var connection = new NpgsqlConnection(_connectionString);
             await connection.OpenAsync(cancellationToken);
@@ -74,6 +71,7 @@ namespace growy_server.Services
             if (!isCedear)
                 command.Parameters.AddWithValue("@Exchange", startJobParameters.Exchange);
 
+            var symbols = new List<SymbolResult>();
             await using (var reader = await command.ExecuteReaderAsync(cancellationToken))
             {
                 while (await reader.ReadAsync(cancellationToken))
@@ -93,19 +91,20 @@ namespace growy_server.Services
                         CompanyName = reader.IsDBNull(10) ? null : reader.GetString(10),
                     });
                 }
-            } // reader closed before reusing the connection
+            }
 
             jobInfo.ProcessingMessage = "Computing volatility";
-            var cpviResults = CalculateCPVIs(symbols.Select(x => x.Symbol).ToArray(), tableName, connection,
+            var symbolNames = symbols.Select(x => x.Symbol).ToArray();
+            var cpviResults = await CpviCalculator.CalculateAsync(symbolNames, tableName, connection,
                 startJobParameters.StartUnixDate * 1000, startJobParameters.EndUnixDate * 1000,
-                isCedear ? null : startJobParameters.Exchange);
+                isCedear ? null : startJobParameters.Exchange, cancellationToken);
             var cpviMap = cpviResults.ToDictionary(c => c.Symbol, c => c.CPVI);
             foreach (var s in symbols)
                 if (cpviMap.TryGetValue(s.Symbol, out var cpvi))
                     s.Volatility = cpvi;
 
             jobInfo.ProcessingMessage = "Computing RSI";
-            var rsiResults = await CalculateRSIs(symbols.Select(x => x.Symbol).ToArray(), tableName, connection, cancellationToken: cancellationToken);
+            var rsiResults = await RsiCalculator.CalculateAsync(symbolNames, tableName, connection, cancellationToken: cancellationToken);
             var rsiMap = rsiResults.ToDictionary(r => r.Symbol, r => r.Rsi);
             foreach (var s in symbols)
                 if (rsiMap.TryGetValue(s.Symbol, out var rsi))
@@ -116,8 +115,7 @@ namespace growy_server.Services
 
         public async Task<SymbolHistoryResult> GetSymbolHistory(string symbol, string exchange, CancellationToken cancellationToken = default)
         {
-            string tableName = exchange != "CEDEAR" ? "symbol_date_price" : "symbol_date_price_cedears";
-            bool isCedear = exchange == "CEDEAR";
+            var (tableName, isCedear, _) = ResolveTable(exchange);
 
             await using var connection = new NpgsqlConnection(_connectionString);
             await connection.OpenAsync(cancellationToken);
@@ -145,170 +143,15 @@ namespace growy_server.Services
                 });
             }
 
-            return new SymbolHistoryResult { Symbol = symbol, Prices = prices, Ema20 = Calculate20Ema(prices) };
+            return new SymbolHistoryResult { Symbol = symbol, Prices = prices, Ema20 = EmaCalculator.Calculate20Ema(prices) };
         }
 
-        private static List<EmaEntry> Calculate20Ema(List<PriceEntry> prices)
+        private static (string TableName, bool IsCedear, string ExchangeFilter) ResolveTable(string exchange)
         {
-            const int period = 20;
-            var emaEntries = new List<EmaEntry>();
-
-            if (prices.Count < period)
-                return emaEntries;
-
-            double k = 2.0 / (period + 1);
-
-            double ema = prices.Take(period).Average(p => p.ClosePrice);
-            emaEntries.Add(new EmaEntry { Value = ema, UnixDate = prices[period - 1].UnixDate });
-
-            for (int i = period; i < prices.Count; i++)
-            {
-                ema = prices[i].ClosePrice * k + ema * (1 - k);
-                emaEntries.Add(new EmaEntry { Value = ema, UnixDate = prices[i].UnixDate });
-            }
-
-            return emaEntries;
-        }
-
-        public List<CPVIResult> CalculateCPVIs(string[] symbols, string tableName, NpgsqlConnection connection,
-            long startDate = 0, long endDate = long.MaxValue, string? exchange = null)
-        {
-            if (symbols.Length == 0)
-                return new List<CPVIResult>();
-
-            var paramPlaceholders = new List<string>();
-            var parameters = new List<NpgsqlParameter>();
-
-            for (int i = 0; i < symbols.Length; i++)
-            {
-                paramPlaceholders.Add($"@p{i}");
-                parameters.Add(new NpgsqlParameter($"@p{i}", symbols[i]));
-            }
-
-            string inClause = string.Join(", ", paramPlaceholders);
-            string dateFilter = startDate > 0 ? "AND unix_date BETWEEN @startDate AND @endDate" : "";
-            string exchangeFilter = exchange != null ? "AND exchange = @exchange" : "";
-
-            string sql = $@"
-                SELECT
-                    symbol AS Symbol,
-                    CASE
-                        WHEN ABS(start_price - end_price) = 0 THEN 9999999
-                        ELSE SUM(ABS(close_price - prev_price)) / ABS(start_price - end_price)
-                    END AS CPVI
-                FROM (
-                    SELECT
-                        symbol,
-                        close_price,
-                        LAG(close_price) OVER (PARTITION BY symbol ORDER BY unix_date) AS prev_price,
-                        FIRST_VALUE(close_price) OVER (PARTITION BY symbol ORDER BY unix_date
-                            ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) AS start_price,
-                        FIRST_VALUE(close_price) OVER (PARTITION BY symbol ORDER BY unix_date DESC
-                            ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) AS end_price
-                    FROM {tableName}
-                    WHERE symbol IN ({inClause}) {dateFilter} {exchangeFilter}
-                ) sub
-                WHERE prev_price IS NOT NULL
-                GROUP BY symbol, start_price, end_price
-                ORDER BY CPVI DESC";
-
-            using var command = new NpgsqlCommand(sql, connection);
-            foreach (var p in parameters)
-                command.Parameters.Add(p);
-            if (startDate > 0)
-            {
-                command.Parameters.AddWithValue("@startDate", startDate);
-                command.Parameters.AddWithValue("@endDate", endDate);
-            }
-            if (exchange != null)
-                command.Parameters.AddWithValue("@exchange", exchange);
-
-            var results = new List<CPVIResult>();
-            using var reader = command.ExecuteReader();
-            while (reader.Read())
-            {
-                results.Add(new CPVIResult
-                {
-                    Symbol = reader.GetString(0),
-                    CPVI = reader.GetDouble(1)
-                });
-            }
-
-            return results;
-        }
-
-        private async Task<List<RsiResult>> CalculateRSIs(string[] symbols, string tableName, NpgsqlConnection connection, int period = 14, CancellationToken cancellationToken = default)
-        {
-            if (symbols.Length == 0)
-                return new List<RsiResult>();
-
-            var paramPlaceholders = new List<string>();
-            var parameters = new List<NpgsqlParameter>();
-
-            for (int i = 0; i < symbols.Length; i++)
-            {
-                paramPlaceholders.Add($"@p{i}");
-                parameters.Add(new NpgsqlParameter($"@p{i}", symbols[i]));
-            }
-
-            string inClause = string.Join(", ", paramPlaceholders);
-
-            string sql = $@"
-                SELECT symbol AS Symbol, close_price AS ClosePrice
-                FROM {tableName}
-                WHERE symbol IN ({inClause})
-                ORDER BY symbol, unix_date ASC";
-
-            await using var command = new NpgsqlCommand(sql, connection);
-            foreach (var p in parameters)
-                command.Parameters.Add(p);
-
-            var rows = new List<(string Symbol, double ClosePrice)>();
-            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-            while (await reader.ReadAsync(cancellationToken))
-                rows.Add((reader.GetString(0), reader.GetDouble(1)));
-
-            var results = new List<RsiResult>();
-
-            foreach (var group in rows.GroupBy(r => r.Symbol))
-            {
-                var prices = group.Select(r => r.ClosePrice).ToList();
-
-                if (prices.Count < period + 1)
-                    continue;
-
-                var gains = new double[prices.Count - 1];
-                var losses = new double[prices.Count - 1];
-
-                for (int i = 0; i < prices.Count - 1; i++)
-                {
-                    double change = prices[i + 1] - prices[i];
-                    gains[i] = change > 0 ? change : 0;
-                    losses[i] = change < 0 ? -change : 0;
-                }
-
-                double avgGain = 0;
-                double avgLoss = 0;
-
-                for (int i = 0; i < period; i++)
-                {
-                    avgGain += gains[i];
-                    avgLoss += losses[i];
-                }
-                avgGain /= period;
-                avgLoss /= period;
-
-                for (int i = period; i < gains.Length; i++)
-                {
-                    avgGain = (avgGain * (period - 1) + gains[i]) / period;
-                    avgLoss = (avgLoss * (period - 1) + losses[i]) / period;
-                }
-
-                double rsi = avgLoss == 0 ? 100 : 100 - (100 / (1 + avgGain / avgLoss));
-                results.Add(new RsiResult { Symbol = group.Key, Rsi = Math.Round(rsi, 2) });
-            }
-
-            return results;
+            bool isCedear = exchange == "CEDEAR";
+            string tableName = isCedear ? "symbol_date_price_cedears" : "symbol_date_price";
+            string exchangeFilter = isCedear ? "" : "AND exchange = @Exchange";
+            return (tableName, isCedear, exchangeFilter);
         }
     }
 }

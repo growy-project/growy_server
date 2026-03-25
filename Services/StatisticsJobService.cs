@@ -3,7 +3,7 @@ using Microsoft.Extensions.Caching.Memory;
 
 namespace growy_server.Services
 {
-    public class StatisticsJobService(IServiceScopeFactory scopeFactory, IHostApplicationLifetime lifetime) : IStatisticsJobService
+    public class StatisticsJobService(IServiceScopeFactory scopeFactory, IHostApplicationLifetime lifetime, ILogger<StatisticsJobService> logger) : IStatisticsJobService
     {
         private readonly IHostApplicationLifetime _lifetime = lifetime;
         public const int KeepJobInListXMinutes = 5;
@@ -33,7 +33,7 @@ namespace growy_server.Services
             ArgumentNullException.ThrowIfNull(parameters);
 
             if (parameters?.StartUnixDate == 0)
-                throw new BadHttpRequestException("Start date is null");
+                throw new BadHttpRequestException("Start date must be greater than zero");
         }
 
 
@@ -44,8 +44,6 @@ namespace growy_server.Services
                 JobId = Guid.NewGuid(),
                 StartJobParameters = parameters,
                 AutoClearAfterStatusJobCheck = true,
-                PercentComplete = 0,
-                Status = StatisticsJobStatus.InProgress,
             };
 
             JobList.Set(jobInfo.JobId, jobInfo, new MemoryCacheEntryOptions
@@ -79,7 +77,7 @@ namespace growy_server.Services
 
         private async Task RunInBackground(StatisticJobInfo jobInfo, CancellationToken cancellationToken)
         {
-            Console.WriteLine("Background task started...");
+            logger.LogInformation("Background task started for job {JobId}", jobInfo.JobId);
 
             try
             {
@@ -92,7 +90,7 @@ namespace growy_server.Services
             }
             catch (Exception ex)
             {
-                Console.WriteLine(ex.ToString());
+                logger.LogError(ex, "Background task failed for job {JobId}", jobInfo.JobId);
                 jobInfo.SetJobInfoStatus(100, ex.ToString());
             }
         }

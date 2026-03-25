@@ -11,9 +11,15 @@ namespace growy_server.Controllers
         [HttpPost("start")]
         public IActionResult StartJob([FromBody] StartStatisticJobParameters parameters)
         {
-            //Missing try catch here
-            var jobId = statisticsJobService.StartJob(parameters);
-            return Ok(new { JobId = jobId });
+            try
+            {
+                var jobId = statisticsJobService.StartJob(parameters);
+                return Ok(new { JobId = jobId });
+            }
+            catch (BadHttpRequestException ex)
+            {
+                return BadRequest(new { Message = ex.Message });
+            }
         }
 
         [HttpGet("history/{symbol}")]
