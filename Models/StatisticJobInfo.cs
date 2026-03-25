@@ -1,4 +1,4 @@
-﻿
+
 namespace growy_server.Models
 {
     public class StatisticJobInfo
@@ -8,25 +8,21 @@ namespace growy_server.Models
             SetJobInfoStatus(0);
         }
 
-        private Guid jobId;
+        public StartStatisticJobParameters StartJobParameters { get; init; }
 
-        public StartStatisticJobParameters StartJobParameters { get; set; }
+        public bool AutoClearAfterStatusJobCheck { get; init; } = true;
 
-        //removed from list after 100% status has been checked
+        public Guid JobId { get; init; }
 
-        public bool AutoClearAfterStatusJobCheck { get; set; } = true;
+        public string Errors { get; private set; }
 
-        public Guid JobId { get => jobId; set { jobId = value; } }
+        public StatisticsJobStatus Status { get; private set; }
 
-        public string Errors { get; set; }
+        public List<SymbolResult> Result { get; internal set; }
 
-        public StatisticsJobStatus Status { get; set; }
+        public int PercentComplete { get; private set; }
 
-        public List<SymbolResult> Result { get; set; }
-
-        public int PercentComplete { get; set; }
-
-        public string ProcessingMessage { get; set; } = "";
+        public string ProcessingMessage { get; internal set; } = "";
 
         public int CurrentPage { get; set; } = 1;
 
