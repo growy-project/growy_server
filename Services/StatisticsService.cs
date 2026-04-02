@@ -45,6 +45,7 @@ namespace growy_server.Services
                     f.precio_fin AS newestPrice
                   FROM precios_inicio i
                   JOIN precios_fin f ON i.symbol = f.symbol
+                  WHERE i.precio_inicio <> 0
                 )
                 SELECT
                     c.symbol,
