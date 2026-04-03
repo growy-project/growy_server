@@ -11,7 +11,7 @@ namespace growy_server.Models.DB
         public long Id { get; set; }
 
         [Column("symbol")]
-        public string Symbol { get; set; }
+        public string Symbol { get; set; } = null!;
 
         [Column("close_price")]
         public double ClosePrice { get; set; }
