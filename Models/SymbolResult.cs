@@ -2,7 +2,7 @@ namespace growy_server.Models
 {
     public class SymbolResult
     {
-        public string Symbol { get; set; }
+        public required string Symbol { get; set; }
         public double PercentageChange { get; set; }
         public double OldestPrice { get; set; }
         public double NewestPrice { get; set; }
