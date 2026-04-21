@@ -14,7 +14,9 @@ builder.Services.AddCors(options =>
     options.AddPolicy("AllowLocalhost",
         policy =>
         {
-            policy.WithOrigins("http://localhost:3000") // Allow frontend URL
+            policy.WithOrigins(
+                      "http://localhost:3000",
+                      "https://gentle-stone-0ea32490f.7.azurestaticapps.net")
                   .AllowAnyMethod()
                   .AllowAnyHeader();
         });
