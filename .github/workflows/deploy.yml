@@ -1,0 +1,90 @@
+name: Deploy to Azure VM
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-azure-vm
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Verify required secrets
+        env:
+          VM_HOST: ${{ secrets.VM_HOST }}
+          VM_USER: ${{ secrets.VM_USER }}
+          VM_SSH_KEY: ${{ secrets.VM_SSH_KEY }}
+          VM_DEPLOY_PATH: ${{ secrets.VM_DEPLOY_PATH }}
+          VM_SERVICE_NAME: ${{ secrets.VM_SERVICE_NAME }}
+        run: |
+          missing=0
+          for var in VM_HOST VM_USER VM_SSH_KEY VM_DEPLOY_PATH VM_SERVICE_NAME; do
+            if [ -z "${!var}" ]; then
+              echo "::error::Required secret $var is not set"
+              missing=1
+            fi
+          done
+          [ "$missing" -eq 0 ]
+
+      - name: Restore
+        run: dotnet restore growy_server.csproj
+
+      - name: Publish (Release, linux-x64, framework-dependent)
+        run: |
+          dotnet publish growy_server.csproj \
+            -c Release \
+            -r linux-x64 \
+            --self-contained false \
+            --no-restore \
+            -o ./publish
+
+      - name: Remove dev appsettings from publish output
+        run: rm -f ./publish/appsettings.Development.json
+
+      - name: Upload publish output to VM staging dir
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.VM_HOST }}
+          username: ${{ secrets.VM_USER }}
+          key: ${{ secrets.VM_SSH_KEY }}
+          source: "publish/*"
+          target: "${{ secrets.VM_DEPLOY_PATH }}_staging"
+          strip_components: 1
+          rm: true
+
+      - name: Swap into live dir and restart service
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.VM_HOST }}
+          username: ${{ secrets.VM_USER }}
+          key: ${{ secrets.VM_SSH_KEY }}
+          envs: VM_DEPLOY_PATH,VM_SERVICE_NAME
+          script_stop: true
+          script: |
+            set -euo pipefail
+            LIVE="${{ secrets.VM_DEPLOY_PATH }}"
+            STAGE="${{ secrets.VM_DEPLOY_PATH }}_staging"
+            SERVICE="${{ secrets.VM_SERVICE_NAME }}"
+
+            sudo mkdir -p "$LIVE"
+            sudo systemctl stop "$SERVICE"
+            sudo rsync -a --delete \
+              --exclude 'appsettings.Production.json' \
+              "$STAGE"/ "$LIVE"/
+            sudo systemctl start "$SERVICE"
+            sleep 2
+            sudo systemctl is-active --quiet "$SERVICE"
+            echo "Deployed. $SERVICE is active."
