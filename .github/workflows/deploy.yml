@@ -39,16 +39,12 @@ jobs:
           done
           [ "$missing" -eq 0 ]
 
-      - name: Restore
-        run: dotnet restore growy_server.csproj
-
       - name: Publish (Release, linux-x64, framework-dependent)
         run: |
           dotnet publish growy_server.csproj \
             -c Release \
             -r linux-x64 \
             --self-contained false \
-            --no-restore \
             -o ./publish
 
       - name: Remove dev appsettings from publish output
