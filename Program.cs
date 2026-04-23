@@ -16,6 +16,7 @@ builder.Services.AddCors(options =>
         {
             policy.WithOrigins(
                       "http://localhost:3000",
+                      "https://momentum-scanner.com",
                       "https://gentle-stone-0ea32490f.7.azurestaticapps.net")
                   .AllowAnyMethod()
                   .AllowAnyHeader();
