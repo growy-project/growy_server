@@ -18,14 +18,14 @@ namespace growy_server.Controllers
             }
             catch (BadHttpRequestException ex)
             {
-                return BadRequest(new { Message = ex.Message });
+                return BadRequest(new { ex.Message });
             }
         }
 
         [HttpGet("history/{symbol}")]
-        public async Task<IActionResult> GetSymbolHistory(string symbol, [FromQuery] string exchange, CancellationToken cancellationToken)
+        public async Task<IActionResult> GetSymbolHistory(string symbol, [FromQuery] GetSymbolHistoryParameters parameters, CancellationToken cancellationToken)
         {
-            var result = await statisticsService.GetSymbolHistory(symbol, exchange, cancellationToken);
+            var result = await statisticsService.GetSymbolHistory(symbol, parameters, cancellationToken);
             return Ok(result);
         }
 
