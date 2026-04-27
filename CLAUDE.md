@@ -63,6 +63,7 @@ Google OAuth is handled by `UserService.GoogleLoginAsync` — validates a Google
 - **CORS**: `http://localhost:3000` only — do not widen without user confirmation.
 - **`Models/`** is the source of truth for data contracts shared with the frontend.
 - Raw SQL is used in statistics queries (via `db.Database.SqlQueryRaw`) — use parameterized queries, never string-interpolate user input.
+- **Unix timestamps in the DB are in milliseconds.** The API and frontend work in seconds. Always multiply by 1000 before passing a unix date to any SQL query (e.g. `startJobParameters.StartUnixDate * 1000`). Failing to do this results in empty query results with no error.
 
 ## Design Principles
 

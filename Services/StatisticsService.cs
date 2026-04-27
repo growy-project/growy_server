@@ -13,6 +13,14 @@ namespace growy_server.Services
         {
             var (tableName, isCedear, exchangeFilter) = ResolveTable(startJobParameters.Exchange);
 
+            jobInfo.ProcessingMessage = startJobParameters.Exchange switch
+            {
+                "NASDAQ" => "Retrieving statistics from 4000+ Nasdaq tickers",
+                "NYSE" => "Retrieving statistics from 4000+ NYSE tickers",
+                "CEDEAR" => "Filtering Nasdaq and NYSE companies with CEDEARs",
+                _ => jobInfo.ProcessingMessage,
+            };
+
             await using var connection = new NpgsqlConnection(_connectionString);
             await connection.OpenAsync(cancellationToken);
 
@@ -114,24 +122,30 @@ namespace growy_server.Services
             return symbols;
         }
 
-        public async Task<SymbolHistoryResult> GetSymbolHistory(string symbol, string exchange, CancellationToken cancellationToken = default)
+        public async Task<SymbolHistoryResult> GetSymbolHistory(string symbol, GetSymbolHistoryParameters parameters, CancellationToken cancellationToken = default)
         {
-            var (tableName, isCedear, _) = ResolveTable(exchange);
+            var (tableName, isCedear, _) = ResolveTable(parameters.Exchange);
 
             await using var connection = new NpgsqlConnection(_connectionString);
             await connection.OpenAsync(cancellationToken);
 
             string exchangeClause = isCedear ? "" : "AND exchange = @exchange";
+            string startDateClause = parameters.StartUnixDate.HasValue ? "AND unix_date >= @startUnixDate" : "";
+            string endDateClause = parameters.EndUnixDate.HasValue ? "AND unix_date <= @endUnixDate" : "";
             string query = $@"
                 SELECT close_price, unix_date
                 FROM {tableName}
-                WHERE symbol = @symbol {exchangeClause}
+                WHERE symbol = @symbol {exchangeClause} {startDateClause} {endDateClause}
                 ORDER BY unix_date ASC";
 
             await using var command = new NpgsqlCommand(query, connection);
             command.Parameters.AddWithValue("@symbol", symbol);
             if (!isCedear)
-                command.Parameters.AddWithValue("@exchange", exchange);
+                command.Parameters.AddWithValue("@exchange", parameters.Exchange);
+            if (parameters.StartUnixDate.HasValue)
+                command.Parameters.AddWithValue("@startUnixDate", parameters.StartUnixDate.Value * 1000);
+            if (parameters.EndUnixDate.HasValue)
+                command.Parameters.AddWithValue("@endUnixDate", parameters.EndUnixDate.Value * 1000);
 
             var prices = new List<PriceEntry>();
             await using var reader = await command.ExecuteReaderAsync(cancellationToken);
