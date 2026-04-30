@@ -16,7 +16,7 @@ namespace growy_server.Services
             jobInfo.ProcessingMessage = startJobParameters.Exchange switch
             {
                 "NASDAQ" => "Retrieving statistics from 4000+ Nasdaq tickers",
-                "NYSE" => "Retrieving statistics from 4000+ NYSE tickers",
+                "NYSE" => "Retrieving statistics from 2000+ NYSE tickers",
                 "CEDEAR" => "Filtering Nasdaq and NYSE companies with CEDEARs",
                 _ => jobInfo.ProcessingMessage,
             };
@@ -25,7 +25,7 @@ namespace growy_server.Services
             await connection.OpenAsync(cancellationToken);
 
             string query = $@"
-                WITH precios_filtrados AS (
+                WITH filtered_prices AS (
                   SELECT
                     symbol,
                     close_price,
@@ -35,31 +35,31 @@ namespace growy_server.Services
                   FROM {tableName}
                   WHERE unix_date BETWEEN @StartDate AND @EndDate {exchangeFilter}
                 ),
-                precios_inicio AS (
-                  SELECT symbol, close_price AS precio_inicio
-                  FROM precios_filtrados
+                start_prices AS (
+                  SELECT symbol, close_price AS start_price
+                  FROM filtered_prices
                   WHERE rn_asc = 1
                 ),
-                precios_fin AS (
-                  SELECT symbol, close_price AS precio_fin
-                  FROM precios_filtrados
+                end_prices AS (
+                  SELECT symbol, close_price AS end_price
+                  FROM filtered_prices
                   WHERE rn_desc = 1
                 ),
-                crecimientos AS (
+                growth AS (
                   SELECT
-                    i.symbol AS symbol,
-                    ((f.precio_fin - i.precio_inicio) / i.precio_inicio) * 100 AS percentageChange,
-                    i.precio_inicio AS oldestPrice,
-                    f.precio_fin AS newestPrice
-                  FROM precios_inicio i
-                  JOIN precios_fin f ON i.symbol = f.symbol
-                  WHERE i.precio_inicio <> 0
+                    s.symbol AS symbol,
+                    ((e.end_price - s.start_price) / s.start_price) * 100 AS percentageChange,
+                    s.start_price AS oldestPrice,
+                    e.end_price AS newestPrice
+                  FROM start_prices s
+                  JOIN end_prices e ON s.symbol = e.symbol
+                  WHERE s.start_price <> 0
                 )
                 SELECT
-                    c.symbol,
-                    c.percentageChange,
-                    c.oldestPrice,
-                    c.newestPrice,
+                    g.symbol,
+                    g.percentageChange,
+                    g.oldestPrice,
+                    g.newestPrice,
                     co.analyst_target_price,
                     co.eps,
                     co.market_capitalization,
@@ -67,8 +67,8 @@ namespace growy_server.Services
                     co.sector,
                     co.industry,
                     co.company_name
-                FROM crecimientos c
-                LEFT JOIN companies co ON co.symbol = c.symbol
+                FROM growth g
+                LEFT JOIN companies co ON co.symbol = g.symbol
                 WHERE percentageChange > @Threshold
                 ORDER BY percentageChange DESC;";
 
@@ -102,19 +102,25 @@ namespace growy_server.Services
                 }
             }
 
-            jobInfo.ProcessingMessage = "Computing volatility";
+            jobInfo.ProcessingMessage = "Computing RSI and Volatility";
             var symbolNames = symbols.Select(x => x.Symbol).ToArray();
-            var cpviResults = await CpviCalculator.CalculateAsync(symbolNames, tableName, connection,
+
+            await using var rsiConnection = new NpgsqlConnection(_connectionString);
+            await rsiConnection.OpenAsync(cancellationToken);
+
+            var cpviTask = CpviCalculator.CalculateAsync(symbolNames, tableName, connection,
                 startJobParameters.StartUnixDate * 1000, startJobParameters.EndUnixDate * 1000,
                 isCedear ? null : startJobParameters.Exchange, cancellationToken);
-            var cpviMap = cpviResults.ToDictionary(c => c.Symbol, c => c.CPVI);
+            var rsiTask = RsiCalculator.CalculateAsync(symbolNames, tableName, rsiConnection, cancellationToken: cancellationToken);
+
+            await Task.WhenAll(cpviTask, rsiTask);
+
+            var cpviMap = (await cpviTask).ToDictionary(c => c.Symbol, c => c.CPVI);
             foreach (var s in symbols)
                 if (cpviMap.TryGetValue(s.Symbol, out var cpvi))
                     s.Volatility = cpvi;
 
-            jobInfo.ProcessingMessage = "Computing RSI";
-            var rsiResults = await RsiCalculator.CalculateAsync(symbolNames, tableName, connection, cancellationToken: cancellationToken);
-            var rsiMap = rsiResults.ToDictionary(r => r.Symbol, r => r.Rsi);
+            var rsiMap = (await rsiTask).ToDictionary(r => r.Symbol, r => r.Rsi);
             foreach (var s in symbols)
                 if (rsiMap.TryGetValue(s.Symbol, out var rsi))
                     s.Rsi = rsi;
