@@ -6,8 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Stack
 
-- **Runtime**: .NET 8 (ASP.NET Core Web API)
-- **ORM**: Entity Framework Core 9
+- **Runtime**: .NET 10 (ASP.NET Core Web API)
+- **ORM**: Entity Framework Core 10
 - **Database**: PostgreSQL only (Npgsql / EF Core 9)
 - **API docs**: Swagger/OpenAPI (available in Development at `/swagger`)
 
