@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using growy_server.Models;
 using growy_server.Services;
@@ -9,6 +10,7 @@ namespace growy_server.Controllers
     public class SymbolController(ISymbolService symbolService, IEmailService emailService) : ControllerBase
     {
         [HttpPost("request-tag")]
+        [Authorize(Roles = "admin")]
         public async Task<IActionResult> RequestTag([FromBody] TagRequestModel request, CancellationToken cancellationToken)
         {
             try
@@ -23,6 +25,7 @@ namespace growy_server.Controllers
         }
 
         [HttpPut("{symbol}/top-growth")]
+        [Authorize(Roles = "admin")]
         public async Task<IActionResult> SetTopGrowth(string symbol, [FromQuery] bool value, CancellationToken cancellationToken)
         {
             try
@@ -37,6 +40,7 @@ namespace growy_server.Controllers
         }
 
         [HttpPut("{symbol}/toxic")]
+        [Authorize(Roles = "admin")]
         public async Task<IActionResult> SetToxic(string symbol, [FromQuery] bool value, CancellationToken cancellationToken)
         {
             try
