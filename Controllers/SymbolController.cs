@@ -10,7 +10,6 @@ namespace growy_server.Controllers
     public class SymbolController(ISymbolService symbolService, IEmailService emailService) : ControllerBase
     {
         [HttpPost("request-tag")]
-        [Authorize(Roles = "admin")]
         public async Task<IActionResult> RequestTag([FromBody] TagRequestModel request, CancellationToken cancellationToken)
         {
             try
