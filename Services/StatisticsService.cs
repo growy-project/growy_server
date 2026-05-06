@@ -128,6 +128,152 @@ namespace growy_server.Services
             return symbols;
         }
 
+        public async Task<List<SymbolResult>> GetWatchlistStatistics(List<(string Symbol, string Exchange)> entries, long startUnixDate, long endUnixDate, StatisticJobInfo jobInfo, CancellationToken cancellationToken = default)
+        {
+            if (entries.Count == 0)
+                return new List<SymbolResult>();
+
+            jobInfo.ProcessingMessage = $"Computing statistics for {entries.Count} watchlist symbols";
+
+            var results = new List<SymbolResult>();
+
+            foreach (var group in entries.GroupBy(e => e.Exchange))
+            {
+                var symbols = group.Select(e => e.Symbol).Distinct().ToArray();
+                if (symbols.Length == 0) continue;
+
+                var groupResults = await GetWatchlistGroupAsync(symbols, group.Key, startUnixDate, endUnixDate, cancellationToken);
+                results.AddRange(groupResults);
+            }
+
+            return results.OrderByDescending(r => r.PercentageChange).ToList();
+        }
+
+        private async Task<List<SymbolResult>> GetWatchlistGroupAsync(string[] symbols, string exchange, long startUnixDate, long endUnixDate, CancellationToken cancellationToken)
+        {
+            var (tableName, isCedear, _) = ResolveTable(exchange);
+
+            await using var connection = new NpgsqlConnection(_connectionString);
+            await connection.OpenAsync(cancellationToken);
+
+            var paramPlaceholders = new List<string>();
+            var symbolParams = new List<NpgsqlParameter>();
+            for (int i = 0; i < symbols.Length; i++)
+            {
+                paramPlaceholders.Add($"@p{i}");
+                symbolParams.Add(new NpgsqlParameter($"@p{i}", symbols[i]));
+            }
+            string inClause = string.Join(", ", paramPlaceholders);
+            string exchangeFilter = isCedear ? "" : "AND exchange = @Exchange";
+
+            string query = $@"
+                WITH filtered_prices AS (
+                  SELECT
+                    symbol,
+                    close_price,
+                    unix_date,
+                    ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY unix_date ASC) AS rn_asc,
+                    ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY unix_date DESC) AS rn_desc
+                  FROM {tableName}
+                  WHERE unix_date BETWEEN @StartDate AND @EndDate
+                    AND symbol IN ({inClause})
+                    {exchangeFilter}
+                ),
+                start_prices AS (
+                  SELECT symbol, close_price AS start_price
+                  FROM filtered_prices
+                  WHERE rn_asc = 1
+                ),
+                end_prices AS (
+                  SELECT symbol, close_price AS end_price
+                  FROM filtered_prices
+                  WHERE rn_desc = 1
+                ),
+                growth AS (
+                  SELECT
+                    s.symbol AS symbol,
+                    ((e.end_price - s.start_price) / s.start_price) * 100 AS percentageChange,
+                    s.start_price AS oldestPrice,
+                    e.end_price AS newestPrice
+                  FROM start_prices s
+                  JOIN end_prices e ON s.symbol = e.symbol
+                  WHERE s.start_price <> 0
+                )
+                SELECT
+                    g.symbol,
+                    g.percentageChange,
+                    g.oldestPrice,
+                    g.newestPrice,
+                    co.analyst_target_price,
+                    co.eps,
+                    co.market_capitalization,
+                    co.description,
+                    co.sector,
+                    co.industry,
+                    co.company_name
+                FROM growth g
+                LEFT JOIN companies co ON co.symbol = g.symbol
+                ORDER BY percentageChange DESC;";
+
+            await using var command = new NpgsqlCommand(query, connection);
+            command.Parameters.AddWithValue("@StartDate", startUnixDate * 1000);
+            command.Parameters.AddWithValue("@EndDate", endUnixDate * 1000);
+            foreach (var p in symbolParams)
+                command.Parameters.Add(p);
+            if (!isCedear)
+                command.Parameters.AddWithValue("@Exchange", exchange);
+
+            var symbolResults = new List<SymbolResult>();
+            await using (var reader = await command.ExecuteReaderAsync(cancellationToken))
+            {
+                while (await reader.ReadAsync(cancellationToken))
+                {
+                    symbolResults.Add(new SymbolResult
+                    {
+                        Symbol = reader.GetString(0),
+                        Exchange = exchange,
+                        PercentageChange = reader.GetDouble(1),
+                        OldestPrice = reader.GetDouble(2),
+                        NewestPrice = reader.GetDouble(3),
+                        TargetPrice = reader.IsDBNull(4) ? 0 : (double)reader.GetDecimal(4),
+                        Eps = reader.IsDBNull(5) ? null : reader.GetDecimal(5),
+                        MarketCapitalization = reader.IsDBNull(6) ? null : reader.GetDecimal(6),
+                        Description = reader.IsDBNull(7) ? null : reader.GetString(7),
+                        Sector = reader.IsDBNull(8) ? null : reader.GetString(8),
+                        Industry = reader.IsDBNull(9) ? null : reader.GetString(9),
+                        CompanyName = reader.IsDBNull(10) ? null : reader.GetString(10),
+                    });
+                }
+            }
+
+            if (symbolResults.Count == 0)
+                return symbolResults;
+
+            var symbolNames = symbolResults.Select(x => x.Symbol).ToArray();
+
+            await using var rsiConnection = new NpgsqlConnection(_connectionString);
+            await rsiConnection.OpenAsync(cancellationToken);
+
+            var cpviTask = CpviCalculator.CalculateAsync(symbolNames, tableName, connection,
+                startUnixDate * 1000, endUnixDate * 1000,
+                isCedear ? null : exchange, cancellationToken);
+            var rsiTask = RsiCalculator.CalculateAsync(symbolNames, tableName, rsiConnection, cancellationToken: cancellationToken);
+
+            await Task.WhenAll(cpviTask, rsiTask);
+
+            var cpviMap = (await cpviTask).ToDictionary(c => c.Symbol, c => c.CPVI);
+            foreach (var s in symbolResults)
+                if (cpviMap.TryGetValue(s.Symbol, out var cpvi))
+                    s.Volatility = cpvi;
+
+            var rsiMap = (await rsiTask).ToDictionary(r => r.Symbol, r => r.Rsi);
+            foreach (var s in symbolResults)
+                if (rsiMap.TryGetValue(s.Symbol, out var rsi))
+                    s.Rsi = rsi;
+
+            return symbolResults;
+        }
+
         public async Task<SymbolHistoryResult> GetSymbolHistory(string symbol, GetSymbolHistoryParameters parameters, CancellationToken cancellationToken = default)
         {
             var (tableName, isCedear, _) = ResolveTable(parameters.Exchange);

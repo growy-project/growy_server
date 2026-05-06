@@ -51,6 +51,7 @@ builder.Services.AddScoped<ISymbolService, SymbolService>();
 
 builder.Services.AddSingleton<IStatisticsJobService, StatisticsJobService>();
 builder.Services.AddScoped<IUserService, UserService>();
+builder.Services.AddScoped<IWatchlistService, WatchlistService>();
 builder.Services.AddTransient<IEmailService, EmailService>();
 
 

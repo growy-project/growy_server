@@ -1,4 +1,4 @@
-﻿using growy_server.Models;
+using growy_server.Models;
 using Microsoft.Extensions.Caching.Memory;
 
 namespace growy_server.Services
@@ -17,7 +17,31 @@ namespace growy_server.Services
 
             var jobInfo = CreateJob(parameters);
 
-            RunJob(jobInfo);
+            RunJob(jobInfo, async (scope, ji, ct) =>
+            {
+                var statisticsService = scope.ServiceProvider.GetRequiredService<IStatisticsService>();
+                return await statisticsService.GetTopGrowth(parameters, ji, ct);
+            });
+
+            return jobInfo.JobId;
+        }
+
+        public Guid StartWatchlistJob(StartWatchlistJobParameters parameters)
+        {
+            ValidateWatchlistParameters(parameters);
+
+            var jobInfo = CreateJob(startJobParameters: null);
+
+            RunJob(jobInfo, async (scope, ji, ct) =>
+            {
+                var watchlistService = scope.ServiceProvider.GetRequiredService<IWatchlistService>();
+                var statisticsService = scope.ServiceProvider.GetRequiredService<IStatisticsService>();
+
+                var entries = await watchlistService.GetSymbolsAsync(parameters.UserId, ct);
+                var pairs = entries.Select(e => (e.Symbol, e.Exchange)).ToList();
+
+                return await statisticsService.GetWatchlistStatistics(pairs, parameters.StartUnixDate, parameters.EndUnixDate, ji, ct);
+            });
 
             return jobInfo.JobId;
         }
@@ -36,13 +60,25 @@ namespace growy_server.Services
                 throw new BadHttpRequestException("Start date must be greater than zero");
         }
 
+        private static void ValidateWatchlistParameters(StartWatchlistJobParameters parameters)
+        {
+            ArgumentNullException.ThrowIfNull(parameters);
 
-        private static StatisticJobInfo CreateJob(StartStatisticJobParameters parameters)
+            if (parameters.StartUnixDate == 0)
+                throw new BadHttpRequestException("Start date must be greater than zero");
+            if (parameters.EndUnixDate == 0)
+                throw new BadHttpRequestException("End date must be greater than zero");
+            if (parameters.UserId <= 0)
+                throw new BadHttpRequestException("Invalid user id");
+        }
+
+
+        private static StatisticJobInfo CreateJob(StartStatisticJobParameters? startJobParameters)
         {
             var jobInfo = new StatisticJobInfo
             {
                 JobId = Guid.NewGuid(),
-                StartJobParameters = parameters,
+                StartJobParameters = startJobParameters,
                 AutoClearAfterStatusJobCheck = true,
             };
 
@@ -54,9 +90,9 @@ namespace growy_server.Services
             return jobInfo;
         }
 
-        private void RunJob(StatisticJobInfo jobInfo)
+        private void RunJob(StatisticJobInfo jobInfo, Func<IServiceScope, StatisticJobInfo, CancellationToken, Task<List<SymbolResult>>> work)
         {
-            _ = Task.Run(() => RunInBackground(jobInfo, _lifetime.ApplicationStopping));
+            _ = Task.Run(() => RunInBackground(jobInfo, work, _lifetime.ApplicationStopping));
         }
 
         private static StatisticJobInfo GetJobInfo(Guid jobId)
@@ -75,17 +111,15 @@ namespace growy_server.Services
                 throw new InvalidOperationException("Invalid job id");
         }
 
-        private async Task RunInBackground(StatisticJobInfo jobInfo, CancellationToken cancellationToken)
+        private async Task RunInBackground(StatisticJobInfo jobInfo, Func<IServiceScope, StatisticJobInfo, CancellationToken, Task<List<SymbolResult>>> work, CancellationToken cancellationToken)
         {
             logger.LogInformation("Background task started for job {JobId}", jobInfo.JobId);
 
             try
             {
                 using var scope = scopeFactory.CreateScope();
-                var statisticsService = scope.ServiceProvider.GetRequiredService<IStatisticsService>();
-                jobInfo.Result = await statisticsService.GetTopGrowth(jobInfo.StartJobParameters, jobInfo, cancellationToken);
+                jobInfo.Result = await work(scope, jobInfo, cancellationToken);
 
-                //add volatility result and 50% 
                 jobInfo.SetJobInfoStatus(100);
             }
             catch (Exception ex)

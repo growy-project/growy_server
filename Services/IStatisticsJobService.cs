@@ -6,6 +6,8 @@ namespace growy_server.Services
     {
         Guid StartJob(StartStatisticJobParameters parameters);
 
+        Guid StartWatchlistJob(StartWatchlistJobParameters parameters);
+
         StatisticJobInfo GetStatusForJob(Guid jobId);
     }
 }

@@ -8,7 +8,7 @@ namespace growy_server.Models
             SetJobInfoStatus(0);
         }
 
-        public required StartStatisticJobParameters StartJobParameters { get; init; }
+        public StartStatisticJobParameters? StartJobParameters { get; init; }
 
         public bool AutoClearAfterStatusJobCheck { get; init; } = true;
 

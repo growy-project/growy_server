@@ -11,5 +11,6 @@ namespace growy_server.Data
         public DbSet<SymbolDatePriceCedear> SymbolDatePriceCedears { get; set; }
         public DbSet<UserEntity> Users { get; set; }
         public DbSet<CompanyEntity> Companies { get; set; }
+        public DbSet<UserWatchlistEntity> UserWatchlist { get; set; }
     }
 }
