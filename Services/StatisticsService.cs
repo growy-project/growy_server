@@ -13,23 +13,33 @@ namespace growy_server.Services
         {
             var (tableName, isCedear, exchangeFilter) = ResolveTable(startJobParameters.Exchange);
 
+            // ProcessingMessage broadcasts the current phase to the polling endpoint.
+            // Cheap inline updates only — IsInMomentum is computed in the same SQL pass
+            // via NTILE, so no separate phase is needed (see docs/metrics_improvement_plan.md).
             jobInfo.ProcessingMessage = startJobParameters.Exchange switch
             {
-                "NASDAQ" => "Retrieving statistics from 4000+ Nasdaq tickers",
-                "NYSE" => "Retrieving statistics from 2000+ NYSE tickers",
-                "CEDEAR" => "Filtering Nasdaq and NYSE companies with CEDEARs",
+                "NASDAQ" => "Retrieving statistics from 4000+ Nasdaq tickers and classifying momentum",
+                "NYSE" => "Retrieving statistics from 2000+ NYSE tickers and classifying momentum",
+                "CEDEAR" => "Filtering Nasdaq and NYSE companies with CEDEARs and classifying momentum",
                 _ => jobInfo.ProcessingMessage,
             };
 
             await using var connection = new NpgsqlConnection(_connectionString);
             await connection.OpenAsync(cancellationToken);
 
+            // SQL builds price-derived metrics (smoothness, stddev, drawdown) then computes
+            // IsInMomentum inline via NTILE: top quintile of percentageChange (post-WHERE)
+            // gated by smoothness >= 50% (project-owner choice — see metrics_improvement_plan.md §4.6)
+            // and max drawdown <= 25%.
+            // Strategy: docs/momentum_trading_summary.md §6 + §7.
+            // Design: docs/metrics_improvement_plan.md (Option B).
             string query = $@"
                 WITH filtered_prices AS (
                   SELECT
                     symbol,
                     close_price,
                     unix_date,
+                    LAG(close_price) OVER (PARTITION BY symbol ORDER BY unix_date ASC) AS prev_close,
                     ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY unix_date ASC) AS rn_asc,
                     ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY unix_date DESC) AS rn_desc
                   FROM {tableName}
@@ -44,6 +54,35 @@ namespace growy_server.Services
                   SELECT symbol, close_price AS end_price
                   FROM filtered_prices
                   WHERE rn_desc = 1
+                ),
+                quality_metrics AS (
+                  SELECT
+                    symbol,
+                    (COUNT(*) FILTER (WHERE close_price > prev_close))::float / COUNT(*) * 100 AS percent_positive_days
+                  FROM filtered_prices
+                  WHERE prev_close IS NOT NULL
+                  GROUP BY symbol
+                ),
+                return_stats AS (
+                  SELECT
+                    symbol,
+                    STDDEV_SAMP((close_price - prev_close) / NULLIF(prev_close, 0)) * 100 AS return_std_dev
+                  FROM filtered_prices
+                  WHERE prev_close IS NOT NULL
+                  GROUP BY symbol
+                ),
+                drawdown_metrics AS (
+                  SELECT
+                    symbol,
+                    MAX((running_max - close_price) / NULLIF(running_max, 0)) * 100 AS max_drawdown
+                  FROM (
+                    SELECT
+                      symbol,
+                      close_price,
+                      MAX(close_price) OVER (PARTITION BY symbol ORDER BY unix_date ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS running_max
+                    FROM filtered_prices
+                  ) peaks
+                  GROUP BY symbol
                 ),
                 growth AS (
                   SELECT
@@ -66,9 +105,18 @@ namespace growy_server.Services
                     co.description,
                     co.sector,
                     co.industry,
-                    co.company_name
+                    co.company_name,
+                    qm.percent_positive_days,
+                    rs.return_std_dev,
+                    dm.max_drawdown,
+                    (NTILE(5) OVER (ORDER BY g.percentageChange DESC) = 1
+                     AND COALESCE(qm.percent_positive_days, 0) >= 50
+                     AND COALESCE(dm.max_drawdown, 0) <= 25) AS is_in_momentum
                 FROM growth g
                 LEFT JOIN companies co ON co.symbol = g.symbol
+                LEFT JOIN quality_metrics qm ON qm.symbol = g.symbol
+                LEFT JOIN return_stats rs ON rs.symbol = g.symbol
+                LEFT JOIN drawdown_metrics dm ON dm.symbol = g.symbol
                 WHERE percentageChange > @Threshold
                 ORDER BY percentageChange DESC;";
 
@@ -98,6 +146,10 @@ namespace growy_server.Services
                         Sector = reader.IsDBNull(8) ? null : reader.GetString(8),
                         Industry = reader.IsDBNull(9) ? null : reader.GetString(9),
                         CompanyName = reader.IsDBNull(10) ? null : reader.GetString(10),
+                        PercentPositiveDays = reader.IsDBNull(11) ? 0 : reader.GetDouble(11),
+                        ReturnStdDev = reader.IsDBNull(12) ? 0 : reader.GetDouble(12),
+                        MaxDrawdown = reader.IsDBNull(13) ? 0 : reader.GetDouble(13),
+                        IsInMomentum = !reader.IsDBNull(14) && reader.GetBoolean(14),
                     });
                 }
             }
@@ -166,12 +218,19 @@ namespace growy_server.Services
             string inClause = string.Join(", ", paramPlaceholders);
             string exchangeFilter = isCedear ? "" : "AND exchange = @Exchange";
 
+            // Watchlist uses absolute thresholds for IsInMomentum (Option B/B1):
+            // percentageChange >= 20%, smoothness >= 50% (project-owner choice — see
+            // metrics_improvement_plan.md §4.6), max drawdown <= 25%.
+            // Relative top-quintile ranking is skipped — it would be degenerate on small watchlists.
+            // Strategy: docs/momentum_trading_summary.md §6 + §7.
+            // Design: docs/metrics_improvement_plan.md (Option B).
             string query = $@"
                 WITH filtered_prices AS (
                   SELECT
                     symbol,
                     close_price,
                     unix_date,
+                    LAG(close_price) OVER (PARTITION BY symbol ORDER BY unix_date ASC) AS prev_close,
                     ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY unix_date ASC) AS rn_asc,
                     ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY unix_date DESC) AS rn_desc
                   FROM {tableName}
@@ -188,6 +247,35 @@ namespace growy_server.Services
                   SELECT symbol, close_price AS end_price
                   FROM filtered_prices
                   WHERE rn_desc = 1
+                ),
+                quality_metrics AS (
+                  SELECT
+                    symbol,
+                    (COUNT(*) FILTER (WHERE close_price > prev_close))::float / COUNT(*) * 100 AS percent_positive_days
+                  FROM filtered_prices
+                  WHERE prev_close IS NOT NULL
+                  GROUP BY symbol
+                ),
+                return_stats AS (
+                  SELECT
+                    symbol,
+                    STDDEV_SAMP((close_price - prev_close) / NULLIF(prev_close, 0)) * 100 AS return_std_dev
+                  FROM filtered_prices
+                  WHERE prev_close IS NOT NULL
+                  GROUP BY symbol
+                ),
+                drawdown_metrics AS (
+                  SELECT
+                    symbol,
+                    MAX((running_max - close_price) / NULLIF(running_max, 0)) * 100 AS max_drawdown
+                  FROM (
+                    SELECT
+                      symbol,
+                      close_price,
+                      MAX(close_price) OVER (PARTITION BY symbol ORDER BY unix_date ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS running_max
+                    FROM filtered_prices
+                  ) peaks
+                  GROUP BY symbol
                 ),
                 growth AS (
                   SELECT
@@ -210,9 +298,18 @@ namespace growy_server.Services
                     co.description,
                     co.sector,
                     co.industry,
-                    co.company_name
+                    co.company_name,
+                    qm.percent_positive_days,
+                    rs.return_std_dev,
+                    dm.max_drawdown,
+                    (g.percentageChange >= 20
+                     AND COALESCE(qm.percent_positive_days, 0) >= 50
+                     AND COALESCE(dm.max_drawdown, 0) <= 25) AS is_in_momentum
                 FROM growth g
                 LEFT JOIN companies co ON co.symbol = g.symbol
+                LEFT JOIN quality_metrics qm ON qm.symbol = g.symbol
+                LEFT JOIN return_stats rs ON rs.symbol = g.symbol
+                LEFT JOIN drawdown_metrics dm ON dm.symbol = g.symbol
                 ORDER BY percentageChange DESC;";
 
             await using var command = new NpgsqlCommand(query, connection);
@@ -242,6 +339,10 @@ namespace growy_server.Services
                         Sector = reader.IsDBNull(8) ? null : reader.GetString(8),
                         Industry = reader.IsDBNull(9) ? null : reader.GetString(9),
                         CompanyName = reader.IsDBNull(10) ? null : reader.GetString(10),
+                        PercentPositiveDays = reader.IsDBNull(11) ? 0 : reader.GetDouble(11),
+                        ReturnStdDev = reader.IsDBNull(12) ? 0 : reader.GetDouble(12),
+                        MaxDrawdown = reader.IsDBNull(13) ? 0 : reader.GetDouble(13),
+                        IsInMomentum = !reader.IsDBNull(14) && reader.GetBoolean(14),
                     });
                 }
             }
