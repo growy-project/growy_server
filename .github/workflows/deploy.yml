@@ -79,6 +79,7 @@ jobs:
             sudo systemctl stop "$SERVICE"
             sudo rsync -a --delete \
               --exclude 'appsettings.Production.json' \
+              --exclude 'appsettings.json' \
               "$STAGE"/ "$LIVE"/
             sudo systemctl start "$SERVICE"
             sleep 2
