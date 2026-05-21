@@ -43,42 +43,49 @@ namespace growy_server.Calculators
             foreach (var group in rows.GroupBy(r => r.Symbol))
             {
                 var prices = group.Select(r => r.ClosePrice).ToList();
-
-                if (prices.Count < period + 1)
-                    continue;
-
-                var gains = new double[prices.Count - 1];
-                var losses = new double[prices.Count - 1];
-
-                for (int i = 0; i < prices.Count - 1; i++)
-                {
-                    double change = prices[i + 1] - prices[i];
-                    gains[i] = change > 0 ? change : 0;
-                    losses[i] = change < 0 ? -change : 0;
-                }
-
-                double avgGain = 0;
-                double avgLoss = 0;
-
-                for (int i = 0; i < period; i++)
-                {
-                    avgGain += gains[i];
-                    avgLoss += losses[i];
-                }
-                avgGain /= period;
-                avgLoss /= period;
-
-                for (int i = period; i < gains.Length; i++)
-                {
-                    avgGain = (avgGain * (period - 1) + gains[i]) / period;
-                    avgLoss = (avgLoss * (period - 1) + losses[i]) / period;
-                }
-
-                double rsi = avgLoss == 0 ? 100 : 100 - (100 / (1 + avgGain / avgLoss));
-                results.Add(new RsiResult { Symbol = group.Key, Rsi = Math.Round(rsi, 2) });
+                var result = ComputeRsi(group.Key, prices, period);
+                if (result != null)
+                    results.Add(result);
             }
 
             return results;
+        }
+
+        public static RsiResult? ComputeRsi(string symbol, IReadOnlyList<double> closePricesOrderedByDate, int period = 14)
+        {
+            if (closePricesOrderedByDate.Count < period + 1)
+                return null;
+
+            int count = closePricesOrderedByDate.Count;
+            var gains = new double[count - 1];
+            var losses = new double[count - 1];
+
+            for (int i = 0; i < count - 1; i++)
+            {
+                double change = closePricesOrderedByDate[i + 1] - closePricesOrderedByDate[i];
+                gains[i] = change > 0 ? change : 0;
+                losses[i] = change < 0 ? -change : 0;
+            }
+
+            double avgGain = 0;
+            double avgLoss = 0;
+
+            for (int i = 0; i < period; i++)
+            {
+                avgGain += gains[i];
+                avgLoss += losses[i];
+            }
+            avgGain /= period;
+            avgLoss /= period;
+
+            for (int i = period; i < gains.Length; i++)
+            {
+                avgGain = (avgGain * (period - 1) + gains[i]) / period;
+                avgLoss = (avgLoss * (period - 1) + losses[i]) / period;
+            }
+
+            double rsi = avgLoss == 0 ? 100 : 100 - (100 / (1 + avgGain / avgLoss));
+            return new RsiResult { Symbol = symbol, Rsi = Math.Round(rsi, 2) };
         }
     }
 }

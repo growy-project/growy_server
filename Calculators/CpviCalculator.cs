@@ -5,6 +5,8 @@ namespace growy_server.Calculators
 {
     public static class CpviCalculator
     {
+        private const double NoMovementSentinel = 9999999;
+
         public static async Task<List<CPVIResult>> CalculateAsync(
             string[] symbols, string tableName, NpgsqlConnection connection,
             long startDate = 0, long endDate = long.MaxValue, string? exchange = null,
@@ -27,27 +29,10 @@ namespace growy_server.Calculators
             string exchangeFilter = exchange != null ? "AND exchange = @exchange" : "";
 
             string sql = $@"
-                SELECT
-                    symbol AS Symbol,
-                    CASE
-                        WHEN ABS(start_price - end_price) = 0 THEN 9999999
-                        ELSE SUM(ABS(close_price - prev_price)) / ABS(start_price - end_price)
-                    END AS CPVI
-                FROM (
-                    SELECT
-                        symbol,
-                        close_price,
-                        LAG(close_price) OVER (PARTITION BY symbol ORDER BY unix_date) AS prev_price,
-                        FIRST_VALUE(close_price) OVER (PARTITION BY symbol ORDER BY unix_date
-                            ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) AS start_price,
-                        FIRST_VALUE(close_price) OVER (PARTITION BY symbol ORDER BY unix_date DESC
-                            ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) AS end_price
-                    FROM {tableName}
-                    WHERE symbol IN ({inClause}) {dateFilter} {exchangeFilter}
-                ) sub
-                WHERE prev_price IS NOT NULL
-                GROUP BY symbol, start_price, end_price
-                ORDER BY CPVI DESC";
+                SELECT symbol AS Symbol, close_price AS ClosePrice
+                FROM {tableName}
+                WHERE symbol IN ({inClause}) {dateFilter} {exchangeFilter}
+                ORDER BY symbol, unix_date ASC";
 
             await using var command = new NpgsqlCommand(sql, connection);
             foreach (var p in parameters)
@@ -60,18 +45,38 @@ namespace growy_server.Calculators
             if (exchange != null)
                 command.Parameters.AddWithValue("@exchange", exchange);
 
-            var results = new List<CPVIResult>();
+            var rows = new List<(string Symbol, double ClosePrice)>();
             await using var reader = await command.ExecuteReaderAsync(cancellationToken);
             while (await reader.ReadAsync(cancellationToken))
+                rows.Add((reader.GetString(0), reader.GetDouble(1)));
+
+            var results = new List<CPVIResult>();
+            foreach (var group in rows.GroupBy(r => r.Symbol))
             {
-                results.Add(new CPVIResult
-                {
-                    Symbol = reader.GetString(0),
-                    CPVI = reader.GetDouble(1)
-                });
+                var prices = group.Select(r => r.ClosePrice).ToList();
+                results.Add(ComputeCpvi(group.Key, prices));
             }
 
-            return results;
+            return results.OrderByDescending(r => r.CPVI).ToList();
+        }
+
+        public static CPVIResult ComputeCpvi(string symbol, IReadOnlyList<double> closePricesOrderedByDate)
+        {
+            if (closePricesOrderedByDate.Count < 2)
+                return new CPVIResult { Symbol = symbol, CPVI = NoMovementSentinel };
+
+            double start = closePricesOrderedByDate[0];
+            double end = closePricesOrderedByDate[closePricesOrderedByDate.Count - 1];
+            double denominator = Math.Abs(start - end);
+
+            if (denominator == 0)
+                return new CPVIResult { Symbol = symbol, CPVI = NoMovementSentinel };
+
+            double numerator = 0;
+            for (int i = 1; i < closePricesOrderedByDate.Count; i++)
+                numerator += Math.Abs(closePricesOrderedByDate[i] - closePricesOrderedByDate[i - 1]);
+
+            return new CPVIResult { Symbol = symbol, CPVI = numerator / denominator };
         }
     }
 }
