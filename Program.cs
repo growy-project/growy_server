@@ -20,7 +20,9 @@ builder.Services.AddCors(options =>
             policy.WithOrigins(
                       "http://localhost:3000",
                       "https://momentum-scanner.com",
-                      "https://gentle-stone-0ea32490f.7.azurestaticapps.net")
+                      "https://gentle-stone-0ea32490f.7.azurestaticapps.net",
+                      "https://cedear-scanner.com",
+                      "https://salmon-bush-09a6bc10f.7.azurestaticapps.net")
                   .AllowAnyMethod()
                   .AllowAnyHeader();
         });
