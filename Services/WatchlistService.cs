@@ -8,7 +8,7 @@ namespace growy_server.Services
 {
     public class WatchlistService(GrowyDbContext db) : IWatchlistService
     {
-        public const int MaxSymbolsPerUser = 30;
+        public const int MaxSymbolsPerUser = 50;
         private const string PostgresUniqueViolation = "23505";
 
         public async Task AddAsync(int userId, string symbol, string exchange, CancellationToken cancellationToken = default)
