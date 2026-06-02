@@ -64,9 +64,6 @@ namespace growy_server.Models.DB
         [Column("has_cedear")]
         public bool HasCedear { get; set; }
 
-        [Column("is_toxic")]
-        public bool IsToxic { get; set; }
-
         [Column("is_top_growth")]
         public bool IsTopGrowth { get; set; }
     }

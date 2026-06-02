@@ -10,9 +10,6 @@ namespace growy_server.Services
         public Task SetSymbolAsTopGrowth(string symbol, bool value, CancellationToken cancellationToken = default)
             => UpdateCompanyAsync(symbol, company => company.IsTopGrowth = value, cancellationToken);
 
-        public Task SetSymbolAsToxic(string symbol, bool value, CancellationToken cancellationToken = default)
-            => UpdateCompanyAsync(symbol, company => company.IsToxic = value, cancellationToken);
-
         public async Task<SymbolDateRangeResult> GetDateRange(string exchange, CancellationToken cancellationToken = default)
         {
             if (exchange.ToUpper() == "CEDEAR")
