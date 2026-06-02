@@ -19,6 +19,7 @@ namespace growy_server.Models
         // result-set growth + smoothness/drawdown gates per docs/momentum_trading_summary.md
         // (§6 smooth-vs-choppy, §7 risk-adjusted scaling).
         public bool IsInMomentum { get; set; } = false;
+        public bool IsBouncing { get; set; } = false;
         public string? CompanyName { get; set; }
         public string? Description { get; set; }
         public string? Sector { get; set; }
