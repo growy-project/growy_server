@@ -156,16 +156,23 @@ namespace growy_server.Services
 
             jobInfo.ProcessingMessage = "Computing RSI and Volatility";
             var symbolNames = symbols.Select(x => x.Symbol).ToArray();
+            var targetMap = symbols.ToDictionary(s => s.Symbol, s => s.TargetPrice);
 
             await using var rsiConnection = new NpgsqlConnection(_connectionString);
             await rsiConnection.OpenAsync(cancellationToken);
+
+            await using var bounceConnection = new NpgsqlConnection(_connectionString);
+            await bounceConnection.OpenAsync(cancellationToken);
 
             var cpviTask = CpviCalculator.CalculateAsync(symbolNames, tableName, connection,
                 startJobParameters.StartUnixDate * 1000, startJobParameters.EndUnixDate * 1000,
                 isCedear ? null : startJobParameters.Exchange, cancellationToken);
             var rsiTask = RsiCalculator.CalculateAsync(symbolNames, tableName, rsiConnection, cancellationToken: cancellationToken);
+            var bounceTask = BounceCalculator.CalculateAsync(symbolNames, tableName, bounceConnection, targetMap,
+                startJobParameters.StartUnixDate * 1000, startJobParameters.EndUnixDate * 1000,
+                isCedear ? null : startJobParameters.Exchange, cancellationToken);
 
-            await Task.WhenAll(cpviTask, rsiTask);
+            await Task.WhenAll(cpviTask, rsiTask, bounceTask);
 
             var cpviMap = (await cpviTask).ToDictionary(c => c.Symbol, c => c.CPVI);
             foreach (var s in symbols)
@@ -176,6 +183,11 @@ namespace growy_server.Services
             foreach (var s in symbols)
                 if (rsiMap.TryGetValue(s.Symbol, out var rsi))
                     s.Rsi = rsi;
+
+            var bounceMap = (await bounceTask).ToDictionary(b => b.Symbol, b => b.IsBouncing);
+            foreach (var s in symbols)
+                if (bounceMap.TryGetValue(s.Symbol, out var bouncing))
+                    s.IsBouncing = bouncing;
 
             return symbols;
         }
@@ -351,16 +363,23 @@ namespace growy_server.Services
                 return symbolResults;
 
             var symbolNames = symbolResults.Select(x => x.Symbol).ToArray();
+            var targetMap = symbolResults.ToDictionary(s => s.Symbol, s => s.TargetPrice);
 
             await using var rsiConnection = new NpgsqlConnection(_connectionString);
             await rsiConnection.OpenAsync(cancellationToken);
+
+            await using var bounceConnection = new NpgsqlConnection(_connectionString);
+            await bounceConnection.OpenAsync(cancellationToken);
 
             var cpviTask = CpviCalculator.CalculateAsync(symbolNames, tableName, connection,
                 startUnixDate * 1000, endUnixDate * 1000,
                 isCedear ? null : exchange, cancellationToken);
             var rsiTask = RsiCalculator.CalculateAsync(symbolNames, tableName, rsiConnection, cancellationToken: cancellationToken);
+            var bounceTask = BounceCalculator.CalculateAsync(symbolNames, tableName, bounceConnection, targetMap,
+                startUnixDate * 1000, endUnixDate * 1000,
+                isCedear ? null : exchange, cancellationToken);
 
-            await Task.WhenAll(cpviTask, rsiTask);
+            await Task.WhenAll(cpviTask, rsiTask, bounceTask);
 
             var cpviMap = (await cpviTask).ToDictionary(c => c.Symbol, c => c.CPVI);
             foreach (var s in symbolResults)
@@ -371,6 +390,11 @@ namespace growy_server.Services
             foreach (var s in symbolResults)
                 if (rsiMap.TryGetValue(s.Symbol, out var rsi))
                     s.Rsi = rsi;
+
+            var bounceMap = (await bounceTask).ToDictionary(b => b.Symbol, b => b.IsBouncing);
+            foreach (var s in symbolResults)
+                if (bounceMap.TryGetValue(s.Symbol, out var bouncing))
+                    s.IsBouncing = bouncing;
 
             return symbolResults;
         }

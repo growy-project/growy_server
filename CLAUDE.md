@@ -21,9 +21,9 @@ dotnet run                              # Start API → https://localhost:7138 (
 dotnet build
 dotnet ef migrations add <Name>         # Requires dotnet-ef tool installed globally
 dotnet ef database update
+dotnet test                             # Run all tests (project at tests/growy_server.Tests/)
+dotnet test --filter "FullyQualifiedName~MyTest"   # Run a single test
 ```
-
-There is no test project in this directory — the parent `CLAUDE.md` mentions `dotnet test`, but it does not apply here.
 
 ## Architecture
 
@@ -54,9 +54,24 @@ Both share the same status surface: jobs are tracked in `MemoryCache` with a 5-m
 
 The `exchange` query parameter distinguishes stock types. `"CEDEAR"` hits `symbol_date_price_cedears` table; all other values hit `symbol_date_price` and filter by exchange column.
 
+### Statistics Pipeline (`StatisticsService`)
+
+`GetTopGrowth` and `GetWatchlistGroupAsync` share the same three-query pattern:
+
+1. **Main CTE query** — a single PostgreSQL query computes growth, smoothness (`percent_positive_days`), `return_std_dev`, `max_drawdown`, and `IsInMomentum` (NTILE-based for top-growth; absolute threshold for watchlist) for all symbols in one pass. Returns one row per symbol.
+2. **CPVI + RSI + Bounce** — three parallel price-array loads on separate connections, each feeding a pure in-memory calculator: `CpviCalculator`, `RsiCalculator`, `BounceCalculator`. Run concurrently via `Task.WhenAll`.
+
+Results are merged back onto `List<SymbolResult>` by symbol key after `Task.WhenAll`.
+
 ### Calculators
 
-`Calculators/` holds pure stateless math used by the statistics pipeline: `RsiCalculator`, `EmaCalculator`, `CpviCalculator`. Treat these as the math layer — they should not depend on EF, HTTP, or DI. The `Calculators` folder pairs with results in `Models/` (`RsiResult`, `CPVIResult`, etc.) — keep computation and DTOs in their respective folders.
+`Calculators/` holds pure stateless math used by the statistics pipeline: `RsiCalculator`, `EmaCalculator`, `CpviCalculator`, `BounceCalculator`. These must not depend on EF, HTTP, or DI. Each pairs with a result DTO in `Models/` (`RsiResult`, `CPVIResult`, `BounceResult`, etc.).
+
+- `CpviCalculator` / `BounceCalculator` — both date+exchange-filtered; follow the same `CalculateAsync` + `Compute*` (pure, sync) structure. `BounceCalculator` also takes a `targetPrices` map to apply the analyst-upside gate.
+- `RsiCalculator` — loads **full unfiltered history** (no date window), unlike the others.
+- `EmaCalculator.Calculate20Ema` — used by `GetSymbolHistory` for the per-symbol detail view; not used by the batch statistics path.
+
+New calculators should mirror the `CpviCalculator` pattern: one `CalculateAsync` for the DB load and one `Compute*` pure method that unit tests target.
 
 ### DbContext Entities
 
@@ -70,7 +85,7 @@ JWT Bearer is wired up in `Program.cs` (`AddAuthentication` + `AddJwtBearer`, wi
 2. `UserService.GoogleLoginAsync` validates the Google `IdToken` against `Google:ClientId`, upserts a `UserEntity` (default `Role = "default"`), and issues a JWT signed with `Jwt:Secret` containing a `"role"` claim (`RoleClaimType = "role"`).
 3. Subsequent requests send `Authorization: Bearer <jwt>`.
 
-Endpoint guards use standard attributes: `[Authorize]` for any authenticated user (e.g. `UserController`), `[Authorize(Roles = "admin")]` for admin-only ops (`PUT /symbol/{symbol}/top-growth`, `PUT /symbol/{symbol}/toxic`). Admin gating is now **server-side via the `role` JWT claim** — the role must be set on the `UserEntity` in the DB. The parent CLAUDE.md note about client-side email gating describes the old behavior.
+Endpoint guards use standard attributes: `[Authorize]` for any authenticated user (e.g. `UserController`), `[Authorize(Roles = "admin")]` for admin-only ops (`PUT /symbol/{symbol}/top-growth`, `PUT /symbol/{symbol}/toxic`). Admin gating is **server-side via the `role` JWT claim** — the role must be set on the `UserEntity` in the DB. The parent CLAUDE.md note about client-side email gating describes the old behavior.
 
 In `UserController`, the authenticated user id is read from the JWT `sub` / `NameIdentifier` claim via `TryGetUserId`.
 
@@ -93,54 +108,7 @@ In `UserController`, the authenticated user id is read from the JWT `sub` / `Nam
 - **New endpoints**: add to an existing controller or create a new one for unrelated domains.
 - **New services**: register in `Program.cs` with the appropriate lifetime (most services are `AddScoped`; only use `AddSingleton` for stateful shared services like the job tracker).
 - **CORS** (`Program.cs` policy `AllowLocalhost`): allows `http://localhost:3000`, `https://momentum-scanner.com`, and `https://gentle-stone-0ea32490f.7.azurestaticapps.net`. Do not widen without user confirmation. Note: the parent CLAUDE.md says "localhost only" — this server now also serves the deployed frontends.
-- **`Models/`** is the source of truth for data contracts shared with the frontend.
+- **`Models/`** is the source of truth for data contracts shared with the frontend. JSON serialization is default PascalCase (no global naming policy, no `[JsonPropertyName]` attributes) — new fields on `SymbolResult` serialize as-is.
 - Raw SQL is used in statistics queries (via `db.Database.SqlQueryRaw`) — use parameterized queries, never string-interpolate user input.
 - **Unix timestamps in the DB are in milliseconds.** The API and frontend work in seconds. Always multiply by 1000 before passing a unix date to any SQL query (e.g. `startJobParameters.StartUnixDate * 1000`). Failing to do this results in empty query results with no error.
-
-## Design Principles
-
-- **SOLID & Architecture**
-- Single Responsibility Principle (SRP): Every class or service must have one, and only one, reason to change. Separate business logic from infrastructure (e.g., API clients vs. domain models).
-
-- Open/Closed Principle (OCP): Systems should be open for extension but closed for modification. Use the Strategy Pattern for integrations; adding a new exchange should involve creating a new IExchangeStrategy implementation, not modifying existing logic.
-
-- Dependency Inversion (DIP): Always depend on abstractions, not implementations. Inject dependencies via interfaces (e.g., IDatabaseService, IExchangeStrategy) to ensure the code is decoupled and testable.
-
-## Clean Code & Readability
-
-- **Meaningful Names**: Variable, function, and class names should clearly reveal their intent. Avoid abbreviations and ambiguous names.
-- **Small Functions**: Functions should be small and do only one thing. Ideally they should be short and focused on a single responsibility.
-- **Single Responsibility Principle (SRP)**: A class should have only one reason to change. Each class should handle a single responsibility.
-- **Avoid Deep Nesting**: Avoid deeply nested control structures such as multiple if statements. Prefer guard clauses and early returns to keep the code easier to read.
-- **Don't Repeat Yourself (DRY)**: Avoid code duplication. If the same logic appears more than once, extract it into a reusable function or component.
-- **Comments Are a Last Resort**: Code should be clear enough to explain itself. Comments should explain why something is done rather than what the code is doing.
-- **Use Proper Error Handling**: Prefer exceptions over error codes to handle failures and unexpected situations.
-- **Keep Function Arguments Minimal**: Functions should have as few parameters as possible, ideally between zero and two.
-- **Separate Levels of Abstraction**: Do not mix high-level business logic with low-level implementation details within the same method.
-- **Classes Should Be Small**: Classes should be small, focused, and highly cohesive, containing only the data and behavior necessary for their responsibility.
-- **Prefer Composition Over Inheritance**: Favor composition when building objects instead of relying on deep inheritance hierarchies.
-- **Boy Scout Rule**: Always leave the code better than you found it.
-
-- **Encapsulate Data**: Avoid exposing internal state directly. Use methods or properties to control access.
-
-## Async/Await Best Practices
-
-- **Async All the Way**: Avoid mixing synchronous and asynchronous code. Do not use .Result or .Wait(), as these can lead to deadlocks. Use await consistently from the entry point down.
-
-- **ConfigureAwaiting**: Use .ConfigureAwait(false) in library or infrastructure code where the synchronization context is not required, improving performance and avoiding overhead.
-
-- **Cancellation Tokens**: Always propagate CancellationToken through asynchronous method chains to allow for graceful shutdowns and request cancellations.
-
-- **Avoid Async Void**: Use Task or ValueTask instead of void for asynchronous methods to ensure exceptions are properly caught and handled. Only use async void for event handlers if strictly necessary.
-
-- **Task Overheads**: Use ValueTask for high-frequency methods that often return synchronously to reduce heap allocations.
-
-## Data Structures & Performance
-
-- **(Big-O)Collection Selection**: Choose the right collection based on the operation's time complexity.Use HashSet<T> or Dictionary<TKey, TValue> for $O(1)$ lookups.Avoid calling .Contains() or .FirstOrDefault() on a large List<T> inside a loop ($O(n^2)$ complexity).
-
-## Defensive Programming
-
-- **Validate Inputs**: Never assume inputs are valid, especially from external systems or APIs
-- **Use Guard Clauses**: Handle invalid states early to simplify the main logic.
-- **Immutable Data When Possible**: Immutable objects reduce side effects and concurrency issues.
+- **Parallel calculator tasks each need their own `NpgsqlConnection`** — Npgsql connections are not thread-safe; open a separate connection per concurrent task.
