@@ -38,21 +38,6 @@ namespace growy_server.Controllers
             }
         }
 
-        [HttpPut("{symbol}/toxic")]
-        [Authorize(Roles = "admin")]
-        public async Task<IActionResult> SetToxic(string symbol, [FromQuery] bool value, CancellationToken cancellationToken)
-        {
-            try
-            {
-                await symbolService.SetSymbolAsToxic(symbol, value, cancellationToken);
-                return NoContent();
-            }
-            catch (KeyNotFoundException ex)
-            {
-                return NotFound(new { Message = ex.Message });
-            }
-        }
-
         [HttpGet("date-range")]
         public async Task<IActionResult> GetDateRange([FromQuery] string exchange, CancellationToken cancellationToken)
         {
