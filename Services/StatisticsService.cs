@@ -106,6 +106,7 @@ namespace growy_server.Services
                     co.sector,
                     co.industry,
                     co.company_name,
+                    co.exchange,
                     qm.percent_positive_days,
                     rs.return_std_dev,
                     dm.max_drawdown,
@@ -146,10 +147,11 @@ namespace growy_server.Services
                         Sector = reader.IsDBNull(8) ? null : reader.GetString(8),
                         Industry = reader.IsDBNull(9) ? null : reader.GetString(9),
                         CompanyName = reader.IsDBNull(10) ? null : reader.GetString(10),
-                        PercentPositiveDays = reader.IsDBNull(11) ? 0 : reader.GetDouble(11),
-                        ReturnStdDev = reader.IsDBNull(12) ? 0 : reader.GetDouble(12),
-                        MaxDrawdown = reader.IsDBNull(13) ? 0 : reader.GetDouble(13),
-                        IsInMomentum = !reader.IsDBNull(14) && reader.GetBoolean(14),
+                        Exchange = reader.IsDBNull(11) ? null : reader.GetString(11),
+                        PercentPositiveDays = reader.IsDBNull(12) ? 0 : reader.GetDouble(12),
+                        ReturnStdDev = reader.IsDBNull(13) ? 0 : reader.GetDouble(13),
+                        MaxDrawdown = reader.IsDBNull(14) ? 0 : reader.GetDouble(14),
+                        IsInMomentum = !reader.IsDBNull(15) && reader.GetBoolean(15),
                     });
                 }
             }
@@ -311,6 +313,7 @@ namespace growy_server.Services
                     co.sector,
                     co.industry,
                     co.company_name,
+                    co.exchange,
                     qm.percent_positive_days,
                     rs.return_std_dev,
                     dm.max_drawdown,
@@ -340,7 +343,6 @@ namespace growy_server.Services
                     symbolResults.Add(new SymbolResult
                     {
                         Symbol = reader.GetString(0),
-                        Exchange = exchange,
                         PercentageChange = reader.GetDouble(1),
                         OldestPrice = reader.GetDouble(2),
                         NewestPrice = reader.GetDouble(3),
@@ -351,10 +353,11 @@ namespace growy_server.Services
                         Sector = reader.IsDBNull(8) ? null : reader.GetString(8),
                         Industry = reader.IsDBNull(9) ? null : reader.GetString(9),
                         CompanyName = reader.IsDBNull(10) ? null : reader.GetString(10),
-                        PercentPositiveDays = reader.IsDBNull(11) ? 0 : reader.GetDouble(11),
-                        ReturnStdDev = reader.IsDBNull(12) ? 0 : reader.GetDouble(12),
-                        MaxDrawdown = reader.IsDBNull(13) ? 0 : reader.GetDouble(13),
-                        IsInMomentum = !reader.IsDBNull(14) && reader.GetBoolean(14),
+                        Exchange = reader.IsDBNull(11) ? null : reader.GetString(11),
+                        PercentPositiveDays = reader.IsDBNull(12) ? 0 : reader.GetDouble(12),
+                        ReturnStdDev = reader.IsDBNull(13) ? 0 : reader.GetDouble(13),
+                        MaxDrawdown = reader.IsDBNull(14) ? 0 : reader.GetDouble(14),
+                        IsInMomentum = !reader.IsDBNull(15) && reader.GetBoolean(15),
                     });
                 }
             }
