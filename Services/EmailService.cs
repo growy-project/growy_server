@@ -11,7 +11,10 @@ namespace growy_server.Services
             var host = smtp["Host"]!;
             var port = int.Parse(smtp["Port"]!);
             var username = smtp["Username"]!;
-            var password = smtp["Password"]!;
+            // Gmail app passwords are shown with spaces for readability; copy-paste can also
+            // introduce non-breaking spaces (U+00A0). Strip all whitespace so the credential
+            // matches what the SMTP server expects.
+            var password = new string(smtp["Password"]!.Where(c => !char.IsWhiteSpace(c)).ToArray());
             var from = smtp["From"]!;
             var adminEmail = smtp["AdminEmail"]!;
 
