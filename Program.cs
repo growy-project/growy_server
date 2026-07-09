@@ -55,6 +55,7 @@ builder.Services.AddSingleton<IStatisticsJobService, StatisticsJobService>();
 builder.Services.AddScoped<IUserService, UserService>();
 builder.Services.AddScoped<IWatchlistService, WatchlistService>();
 builder.Services.AddTransient<IEmailService, EmailService>();
+builder.Services.AddScoped<IMessageService, MessageService>();
 
 
 var app = builder.Build();
