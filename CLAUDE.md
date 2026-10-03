@@ -46,8 +46,9 @@ Both share the same status surface: jobs are tracked in `MemoryCache` with a 5-m
 | Controller             | Route prefix  | Key endpoints                                                                                                     | Auth                       |
 | ---------------------- | ------------- | ----------------------------------------------------------------------------------------------------------------- | -------------------------- |
 | `StatisticsController` | `/statistics` | `POST /start`, `GET /history/{symbol}?exchange=`, `GET /status/{jobId}`                                           | anonymous                  |
-| `SymbolController`     | `/symbol`     | `GET /date-range?exchange=`, `PUT /{symbol}/top-growth?value=`, `PUT /{symbol}/toxic?value=`, `POST /request-tag` | mixed (admin on tag PUTs)  |
-| `UserController`       | `/my-list`    | `POST /symbol`, `DELETE /symbol?symbol=&exchange=`, `GET ?startUnixDate=&endUnixDate=` (kicks watchlist job)      | `[Authorize]` (any user)   |
+| `SymbolController`     | `/symbol`     | `GET /date-range?exchange=`, `PUT /{symbol}/top-growth?value=`, `POST /request-tag`                              | mixed (admin on `top-growth` PUT) |
+| `UserController`       | `/my-list`    | `POST /symbol`, `DELETE /symbol?symbol=&exchange=`, `GET ?startUnixDate=&endUnixDate=` (kicks watchlist job), `GET /sectors` (sync sector breakdown) | `[Authorize]` (any user)   |
+| `MessageController`    | `/messages`   | `POST /` (send a contact message — persisted to `email_messages` + emailed to `Smtp:ContactEmail`)               | `[Authorize]` (any user)   |
 | `AuthController`       | `/auth`       | `POST /google-login`                                                                                              | anonymous                  |
 
 ### Exchange Types
@@ -56,26 +57,29 @@ The `exchange` query parameter distinguishes stock types. `"CEDEAR"` hits `symbo
 
 ### Statistics Pipeline (`StatisticsService`)
 
-`GetTopGrowth` and `GetWatchlistGroupAsync` share the same three-query pattern:
+`GetTopGrowth` and `GetWatchlistGroupAsync` share the same two-query pattern:
 
-1. **Main CTE query** — a single PostgreSQL query computes growth, smoothness (`percent_positive_days`), `return_std_dev`, `max_drawdown`, and `IsInMomentum` (NTILE-based for top-growth; absolute threshold for watchlist) for all symbols in one pass. Returns one row per symbol.
-2. **CPVI + RSI + Bounce** — three parallel price-array loads on separate connections, each feeding a pure in-memory calculator: `CpviCalculator`, `RsiCalculator`, `BounceCalculator`. Run concurrently via `Task.WhenAll`.
+1. **Main CTE query** — a single PostgreSQL query computes growth, smoothness (`percent_positive_days`), `return_std_dev`, and `max_drawdown` for all symbols in one pass. Returns one row per symbol (a 15-column projection read by `ReadSymbolResult`).
+2. **Price series + RSI** — two parallel loads on separate connections: `PriceSeriesLoader` fetches the windowed close prices that feed `BounceCalculator`, while `RsiCalculator` loads full history. Run concurrently via `Task.WhenAll`.
 
 Results are merged back onto `List<SymbolResult>` by symbol key after `Task.WhenAll`.
 
 ### Calculators
 
-`Calculators/` holds pure stateless math used by the statistics pipeline: `RsiCalculator`, `EmaCalculator`, `CpviCalculator`, `BounceCalculator`. These must not depend on EF, HTTP, or DI. Each pairs with a result DTO in `Models/` (`RsiResult`, `CPVIResult`, `BounceResult`, etc.).
+`Calculators/` holds pure stateless math used by the statistics pipeline: `RsiCalculator`, `EmaCalculator`, `BounceCalculator`, plus the shared `PriceSeriesLoader`. These must not depend on EF, HTTP, or DI. Each pairs with a result DTO in `Models/` (`RsiResult`, `BounceResult`, etc.).
 
-- `CpviCalculator` / `BounceCalculator` — both date+exchange-filtered; follow the same `CalculateAsync` + `Compute*` (pure, sync) structure. `BounceCalculator` also takes a `targetPrices` map to apply the analyst-upside gate.
-- `RsiCalculator` — loads **full unfiltered history** (no date window), unlike the others.
+- `PriceSeriesLoader.LoadAsync` — the shared date+exchange-filtered close-price load (symbol → prices, oldest-first) consumed by `BounceCalculator.CalculateFromSeries`.
+- `BounceCalculator` — pure and sync; also takes a `targetPrices` map to apply the analyst-upside gate.
+- `RsiCalculator` — ignores the caller's date window and instead loads the **most recent `23 * period` bars per symbol** (a `LATERAL` per-symbol `LIMIT`), so the reading is always "overbought/oversold *now*". The bound is a performance measure, not an approximation: Wilder seed influence decays to ~3e-10 over that span, and symbols with fewer bars load all of them.
 - `EmaCalculator.Calculate20Ema` — used by `GetSymbolHistory` for the per-symbol detail view; not used by the batch statistics path.
 
-New calculators should mirror the `CpviCalculator` pattern: one `CalculateAsync` for the DB load and one `Compute*` pure method that unit tests target.
+New calculators should mirror the `BounceCalculator` pattern: consume a `PriceSeriesLoader` series (or do their own DB load) via a `CalculateFromSeries`/`CalculateAsync` entry point, with the math in a pure `Compute*` method that unit tests target.
 
 ### DbContext Entities
 
-`GrowyDbContext` exposes: `SymbolDatePrices`, `SymbolDatePriceCedears`, `Users`, `Companies`, `UserWatchlist`.
+`GrowyDbContext` exposes: `SymbolDatePrices`, `SymbolDatePriceCedears`, `Users`, `Companies`, `UserWatchlist`, `EmailMessages`.
+
+Note: this repo has **no EF Migrations folder** — the DB schema is managed manually against the Postgres dump. Entities are mapped with data annotations, but new tables must be created with a hand-written DDL script (see `docs/create-email-messages-table.sql`), not `dotnet ef migrations`.
 
 ### Auth
 
@@ -85,17 +89,19 @@ JWT Bearer is wired up in `Program.cs` (`AddAuthentication` + `AddJwtBearer`, wi
 2. `UserService.GoogleLoginAsync` validates the Google `IdToken` against `Google:ClientId`, upserts a `UserEntity` (default `Role = "default"`), and issues a JWT signed with `Jwt:Secret` containing a `"role"` claim (`RoleClaimType = "role"`).
 3. Subsequent requests send `Authorization: Bearer <jwt>`.
 
-Endpoint guards use standard attributes: `[Authorize]` for any authenticated user (e.g. `UserController`), `[Authorize(Roles = "admin")]` for admin-only ops (`PUT /symbol/{symbol}/top-growth`, `PUT /symbol/{symbol}/toxic`). Admin gating is **server-side via the `role` JWT claim** — the role must be set on the `UserEntity` in the DB. The parent CLAUDE.md note about client-side email gating describes the old behavior.
+Endpoint guards use standard attributes: `[Authorize]` for any authenticated user (e.g. `UserController`), `[Authorize(Roles = "admin")]` for admin-only ops (`PUT /symbol/{symbol}/top-growth`). Admin gating is **server-side via the `role` JWT claim** — the role must be set on the `UserEntity` in the DB. The parent CLAUDE.md note about client-side email gating describes the old behavior.
 
 In `UserController`, the authenticated user id is read from the JWT `sub` / `NameIdentifier` claim via `TryGetUserId`.
 
 ### Email
 
-`EmailService` sends tag-request notifications via SMTP. Config lives in the `Smtp` section of `appsettings.json` (Host/Port/Username/Password/From/AdminEmail). Never hardcode credentials — `appsettings.json` is gitignored; use `appsettings.Example.json` as the template.
+`EmailService` sends SMTP notifications: `SendTagRequestAsync` (tag requests → `Smtp:AdminEmail`) and `SendContactMessageAsync` (user contact messages → `Smtp:ContactEmail`, falling back to `AdminEmail`, with `ReplyTo` set to the sender). Config lives in the `Smtp` section of `appsettings.json` (Host/Port/Username/Password/From/AdminEmail/ContactEmail). Never hardcode credentials — `appsettings.json` is gitignored; use `appsettings.Example.json` as the template.
+
+`MessageService` (scoped) orchestrates the contact-message flow: it looks up the sender's email from the `users` table via the authenticated JWT user id (never trusts a client-supplied address), persists an `EmailMessageEntity` to `email_messages` **first**, then calls `EmailService`. `MessageController` (`POST /messages`, `[Authorize]`) reuses the `TryGetUserId` JWT pattern from `UserController`.
 
 ### Configuration
 
-`appsettings.json` (gitignored) holds: `ConnectionStrings:DefaultConnection`, `Google:ClientId`, `Jwt:{Secret,Issuer,Audience,ExpirationHours}`, and the `Smtp` section. Copy `appsettings.Example.json` and fill in values. The JWT secret should be generated with `openssl rand -base64 64`.
+`appsettings.json` (gitignored) holds: `ConnectionStrings:DefaultConnection`, `Google:ClientId`, `Jwt:{Secret,Issuer,Audience,ExpirationHours}`, and the `Smtp:{Host,Port,Username,Password,From,AdminEmail,ContactEmail}` section. Copy `appsettings.Example.json` and fill in values. The JWT secret should be generated with `openssl rand -base64 64`.
 
 ### Watchlist
 
@@ -103,12 +109,14 @@ In `UserController`, the authenticated user id is read from the JWT `sub` / `Nam
 - `WatchlistLimitReachedException` — user is at the symbol cap
 - `WatchlistDuplicateException` — `(symbol, exchange)` already in the user's list
 
+`GetSectorDistributionAsync` (backing `GET /my-list/sectors`) follows the calculator split: an EF `LEFT JOIN` load plus the pure static `WatchlistService.BuildSectorDistribution`, which is what the unit tests target. Two rules matter — **join `companies` on symbol alone** (`companies.symbol` is the PK holding the underlying ticker; also matching `exchange` would drop every CEDEAR row, since `companies.exchange` is the underlying NYSE/NASDAQ listing), and collapse `NULL`/empty/whitespace sectors and missing `companies` rows into a single `"Unknown"` bucket sorted last. See `docs/user_watchlist_api.md`.
+
 ## Key Conventions
 
 - **New endpoints**: add to an existing controller or create a new one for unrelated domains.
 - **New services**: register in `Program.cs` with the appropriate lifetime (most services are `AddScoped`; only use `AddSingleton` for stateful shared services like the job tracker).
-- **CORS** (`Program.cs` policy `AllowLocalhost`): allows `http://localhost:3000`, `https://momentum-scanner.com`, and `https://gentle-stone-0ea32490f.7.azurestaticapps.net`. Do not widen without user confirmation. Note: the parent CLAUDE.md says "localhost only" — this server now also serves the deployed frontends.
-- **`Models/`** is the source of truth for data contracts shared with the frontend. JSON serialization is default PascalCase (no global naming policy, no `[JsonPropertyName]` attributes) — new fields on `SymbolResult` serialize as-is.
+- **CORS** (`Program.cs` policy `AllowLocalhost`): allows `http://localhost:3000` plus the deployed frontends — `https://momentum-scanner.com` and `https://cedear-scanner.com` (and their Azure Static Web App URLs `https://gentle-stone-0ea32490f.7.azurestaticapps.net` / `https://salmon-bush-09a6bc10f.7.azurestaticapps.net`). Do not widen without user confirmation. Note: the parent CLAUDE.md says "localhost only" — this server now also serves the deployed frontends.
+- **`Models/`** is the source of truth for data contracts shared with the frontend. Properties are PascalCase in C# and carry no `[JsonPropertyName]` attributes, but `AddControllers()` applies no custom `JsonSerializerOptions`, so ASP.NET Core's `JsonSerializerDefaults.Web` applies and **the wire format is camelCase** (`percentageChange`, `companyName`). New fields serialize the same way — no annotation needed.
 - Raw SQL is used in statistics queries (via `db.Database.SqlQueryRaw`) — use parameterized queries, never string-interpolate user input.
 - **Unix timestamps in the DB are in milliseconds.** The API and frontend work in seconds. Always multiply by 1000 before passing a unix date to any SQL query (e.g. `startJobParameters.StartUnixDate * 1000`). Failing to do this results in empty query results with no error.
 - **Parallel calculator tasks each need their own `NpgsqlConnection`** — Npgsql connections are not thread-safe; open a separate connection per concurrent task.

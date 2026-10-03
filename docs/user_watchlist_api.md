@@ -2,7 +2,7 @@
 
 Per-user watchlist of saved symbols. All endpoints require a valid JWT (`Authorization: Bearer <token>`) issued by `POST /auth/google-login`. The user is identified by the `sub` claim of that JWT.
 
-**Hard limit:** each user may save at most **20 symbols**.
+**Hard limit:** each user may save at most **50 symbols** (`WatchlistService.MaxSymbolsPerUser`).
 
 ---
 
@@ -35,11 +35,11 @@ Content-Type: application/json
 | `201 Created` | Symbol added. | empty |
 | `400 Bad Request` | Body validation failed. | `{ "errors": ... }` |
 | `401 Unauthorized` | Missing or invalid JWT. | empty |
-| `409 Conflict` | Either the symbol+exchange pair is already in the watchlist, or the user already has 20 symbols saved. | `{ "message": "Watchlist limit reached (20 symbols)" }` or `{ "message": "Symbol AAPL (NASDAQ) is already in your watchlist" }` |
+| `409 Conflict` | Either the symbol+exchange pair is already in the watchlist, or the user already has 50 symbols saved. | `{ "message": "Watchlist limit reached (50 symbols)" }` or `{ "message": "Symbol AAPL (NASDAQ) is already in your watchlist" }` |
 
 ### Notes
 
-- The 20-cap and duplicate check run inside a serializable transaction, so concurrent POSTs from two tabs cannot exceed the limit or create duplicates.
+- The cap and duplicate check run inside a serializable transaction, so concurrent POSTs from two tabs cannot exceed the limit or create duplicates.
 
 ---
 
@@ -74,7 +74,7 @@ Authorization: Bearer <jwt>
 
 Kick off a background job that computes per-symbol statistics for **every** symbol in the current user's watchlist (mixed exchanges). Returns a `jobId`; poll `GET /statistics/status/{jobId}` for progress and the final result.
 
-The result shape is identical to `POST /statistics/start` — same `List<SymbolResult>` (`PercentageChange`, `Rsi`, `Volatility`, fundamentals, etc.). Unlike top-growth, **no `MinimumExpectedGrowth` threshold is applied** — every saved symbol is returned regardless of performance.
+The result shape is identical to `POST /statistics/start` — same `List<SymbolResult>` (`PercentageChange`, `Rsi`, fundamentals, etc.). Unlike top-growth, **no `MinimumExpectedGrowth` threshold is applied** — every saved symbol is returned regardless of performance.
 
 ### Request
 
@@ -123,7 +123,6 @@ Returns a `StatisticJobInfo`:
       "eps": 6.42,
       "targetPrice": 220.0,
       "rsi": 58.1,
-      "volatility": 1.24,
       "companyName": "Apple Inc.",
       "description": "...",
       "sector": "Technology",
@@ -139,6 +138,66 @@ Returns a `StatisticJobInfo`:
 `status` enum values: `0 = NotStarted`, `1 = InProgress`, `2 = Completed`, `3 = CompletedWithErrors`.
 
 For watchlist jobs, `startJobParameters` is `null` (top-growth is the only variant that populates it). Jobs auto-clear from the in-memory cache 5 minutes after the last status check.
+
+---
+
+## `GET /my-list/sectors`
+
+Return the current user's watchlist symbols grouped by sector, with each sector's share of the watchlist. Synchronous — no job, no polling. Intended for a sector-allocation chart with drill-down into the symbols behind each slice.
+
+### Request
+
+```http
+GET /my-list/sectors
+Authorization: Bearer <jwt>
+```
+
+No parameters — the user is taken from the JWT `sub` claim.
+
+### Responses
+
+| Status | When | Body |
+|---|---|---|
+| `200 OK` | Always, including an empty watchlist (`[]`). | `WatchlistSectorResult[]` |
+| `401 Unauthorized` | Missing or invalid JWT. | empty |
+
+```json
+[
+  {
+    "sector": "Technology",
+    "count": 17,
+    "percentage": 34.0,
+    "symbols": [
+      { "symbol": "AMAT", "exchange": "CEDEAR" },
+      { "symbol": "WDC", "exchange": "NASDAQ" }
+    ]
+  },
+  {
+    "sector": "Unknown",
+    "count": 2,
+    "percentage": 4.0,
+    "symbols": [
+      { "symbol": "PBRG", "exchange": "NASDAQ" },
+      { "symbol": "TQQQ", "exchange": "CEDEAR" }
+    ]
+  }
+]
+```
+
+| Field | Type | Notes |
+|---|---|---|
+| `sector` | string | Sector name from `companies.sector`, or `"Unknown"` (see below). |
+| `count` | int | Watchlist rows in this sector. |
+| `percentage` | double | `count / totalRows * 100`, rounded to 2 decimals. |
+| `symbols` | array | `{ symbol, exchange }` pairs, ordered by symbol. |
+
+### Notes
+
+- **Sector comes from a `LEFT JOIN companies ON companies.symbol = user_watchlist.symbol` — symbol only, not symbol+exchange.** `companies.symbol` is the PK and holds the underlying ticker, while `companies.exchange` is the underlying NYSE/NASDAQ listing; a CEDEAR row (`MRVL`/`CEDEAR`) therefore still resolves to its real sector. Matching on exchange as well would put every CEDEAR in `"Unknown"`.
+- `companies.sector` is `NULL` for ~2,800 rows and `''` for ~550 more. Both — plus any whitespace-only value and any symbol with no `companies` row at all — collapse into a single **`"Unknown"`** group, so `count` always sums to the full watchlist size and `percentage` to ~100.
+- Groups are ordered by `count` descending, ties broken by sector name, with `"Unknown"` always last regardless of size.
+- Percentages are rounded independently, so on awkward splits (e.g. three symbols) they may sum to `99.99`/`100.01` rather than exactly `100`.
+- The same symbol saved under two exchanges is two rows and counts twice.
 
 ---
 
@@ -166,6 +225,10 @@ JOB_ID="$(curl -s -G "http://localhost:7138/my-list" \
 
 # Poll until complete
 curl -s "http://localhost:7138/statistics/status/$JOB_ID" \
+  -H "Authorization: Bearer $JWT" | jq
+
+# Sector breakdown of the whole watchlist
+curl -s "http://localhost:7138/my-list/sectors" \
   -H "Authorization: Bearer $JWT" | jq
 
 # Remove a symbol

@@ -1,19 +1,21 @@
-using growy_server.Models;
 using Npgsql;
 
 namespace growy_server.Calculators
 {
-    public static class CpviCalculator
+    public static class PriceSeriesLoader
     {
-        private const double NoMovementSentinel = 9999999;
-
-        public static async Task<List<CPVIResult>> CalculateAsync(
+        // Shared windowed price load for calculators that need the identical rows,
+        // consumed via CalculateFromSeries.
+        // Returns symbol -> close prices ordered oldest-first.
+        public static async Task<Dictionary<string, List<double>>> LoadAsync(
             string[] symbols, string tableName, NpgsqlConnection connection,
             long startDate = 0, long endDate = long.MaxValue, string? exchange = null,
             CancellationToken cancellationToken = default)
         {
+            var series = new Dictionary<string, List<double>>();
+
             if (symbols.Length == 0)
-                return [];
+                return series;
 
             var paramPlaceholders = new List<string>();
             var parameters = new List<NpgsqlParameter>();
@@ -45,38 +47,19 @@ namespace growy_server.Calculators
             if (exchange != null)
                 command.Parameters.AddWithValue("@exchange", exchange);
 
-            var rows = new List<(string Symbol, double ClosePrice)>();
             await using var reader = await command.ExecuteReaderAsync(cancellationToken);
             while (await reader.ReadAsync(cancellationToken))
-                rows.Add((reader.GetString(0), reader.GetDouble(1)));
-
-            var results = new List<CPVIResult>();
-            foreach (var group in rows.GroupBy(r => r.Symbol))
             {
-                var prices = group.Select(r => r.ClosePrice).ToList();
-                results.Add(ComputeCpvi(group.Key, prices));
+                string symbol = reader.GetString(0);
+                if (!series.TryGetValue(symbol, out var prices))
+                {
+                    prices = [];
+                    series[symbol] = prices;
+                }
+                prices.Add(reader.GetDouble(1));
             }
 
-            return results.OrderByDescending(r => r.CPVI).ToList();
-        }
-
-        public static CPVIResult ComputeCpvi(string symbol, IReadOnlyList<double> closePricesOrderedByDate)
-        {
-            if (closePricesOrderedByDate.Count < 2)
-                return new CPVIResult { Symbol = symbol, CPVI = NoMovementSentinel };
-
-            double start = closePricesOrderedByDate[0];
-            double end = closePricesOrderedByDate[closePricesOrderedByDate.Count - 1];
-            double denominator = Math.Abs(start - end);
-
-            if (denominator == 0)
-                return new CPVIResult { Symbol = symbol, CPVI = NoMovementSentinel };
-
-            double numerator = 0;
-            for (int i = 1; i < closePricesOrderedByDate.Count; i++)
-                numerator += Math.Abs(closePricesOrderedByDate[i] - closePricesOrderedByDate[i - 1]);
-
-            return new CPVIResult { Symbol = symbol, CPVI = numerator / denominator };
+            return series;
         }
     }
 }

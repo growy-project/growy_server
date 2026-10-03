@@ -14,25 +14,20 @@ namespace growy_server.Services
             var (tableName, isCedear, exchangeFilter) = ResolveTable(startJobParameters.Exchange);
 
             // ProcessingMessage broadcasts the current phase to the polling endpoint.
-            // Cheap inline updates only — IsInMomentum is computed in the same SQL pass
-            // via NTILE, so no separate phase is needed (see docs/metrics_improvement_plan.md).
+            // Cheap inline updates only.
             jobInfo.ProcessingMessage = startJobParameters.Exchange switch
             {
-                "NASDAQ" => "Retrieving statistics from 4000+ Nasdaq tickers and classifying momentum",
-                "NYSE" => "Retrieving statistics from 2000+ NYSE tickers and classifying momentum",
-                "CEDEAR" => "Filtering Nasdaq and NYSE companies with CEDEARs and classifying momentum",
+                "NASDAQ" => "Retrieving statistics from 4000+ Nasdaq tickers",
+                "NYSE" => "Retrieving statistics from 2000+ NYSE tickers",
+                "CEDEAR" => "Filtering Nasdaq and NYSE companies with CEDEARs",
                 _ => jobInfo.ProcessingMessage,
             };
 
             await using var connection = new NpgsqlConnection(_connectionString);
             await connection.OpenAsync(cancellationToken);
 
-            // SQL builds price-derived metrics (smoothness, stddev, drawdown) then computes
-            // IsInMomentum inline via NTILE: top quintile of percentageChange (post-WHERE)
-            // gated by smoothness >= 50% (project-owner choice — see metrics_improvement_plan.md §4.6)
-            // and max drawdown <= 25%.
-            // Strategy: docs/momentum_trading_summary.md §6 + §7.
-            // Design: docs/metrics_improvement_plan.md (Option B).
+            // SQL builds price-derived quality metrics (smoothness, stddev, drawdown)
+            // alongside growth in a single pass.
             string query = $@"
                 WITH filtered_prices AS (
                   SELECT
@@ -109,10 +104,7 @@ namespace growy_server.Services
                     co.exchange,
                     qm.percent_positive_days,
                     rs.return_std_dev,
-                    dm.max_drawdown,
-                    (NTILE(5) OVER (ORDER BY g.percentageChange DESC) = 1
-                     AND COALESCE(qm.percent_positive_days, 0) >= 50
-                     AND COALESCE(dm.max_drawdown, 0) <= 25) AS is_in_momentum
+                    dm.max_drawdown
                 FROM growth g
                 LEFT JOIN companies co ON co.symbol = g.symbol
                 LEFT JOIN quality_metrics qm ON qm.symbol = g.symbol
@@ -133,63 +125,13 @@ namespace growy_server.Services
             await using (var reader = await command.ExecuteReaderAsync(cancellationToken))
             {
                 while (await reader.ReadAsync(cancellationToken))
-                {
-                    symbols.Add(new SymbolResult
-                    {
-                        Symbol = reader.GetString(0),
-                        PercentageChange = reader.GetDouble(1),
-                        OldestPrice = reader.GetDouble(2),
-                        NewestPrice = reader.GetDouble(3),
-                        TargetPrice = reader.IsDBNull(4) ? 0 : (double)reader.GetDecimal(4),
-                        Eps = reader.IsDBNull(5) ? null : reader.GetDecimal(5),
-                        MarketCapitalization = reader.IsDBNull(6) ? null : reader.GetDecimal(6),
-                        Description = reader.IsDBNull(7) ? null : reader.GetString(7),
-                        Sector = reader.IsDBNull(8) ? null : reader.GetString(8),
-                        Industry = reader.IsDBNull(9) ? null : reader.GetString(9),
-                        CompanyName = reader.IsDBNull(10) ? null : reader.GetString(10),
-                        Exchange = reader.IsDBNull(11) ? null : reader.GetString(11),
-                        PercentPositiveDays = reader.IsDBNull(12) ? 0 : reader.GetDouble(12),
-                        ReturnStdDev = reader.IsDBNull(13) ? 0 : reader.GetDouble(13),
-                        MaxDrawdown = reader.IsDBNull(14) ? 0 : reader.GetDouble(14),
-                        IsInMomentum = !reader.IsDBNull(15) && reader.GetBoolean(15),
-                    });
-                }
+                    symbols.Add(ReadSymbolResult(reader));
             }
 
-            jobInfo.ProcessingMessage = "Computing RSI and Volatility";
-            var symbolNames = symbols.Select(x => x.Symbol).ToArray();
-            var targetMap = symbols.ToDictionary(s => s.Symbol, s => s.TargetPrice);
-
-            await using var rsiConnection = new NpgsqlConnection(_connectionString);
-            await rsiConnection.OpenAsync(cancellationToken);
-
-            await using var bounceConnection = new NpgsqlConnection(_connectionString);
-            await bounceConnection.OpenAsync(cancellationToken);
-
-            var cpviTask = CpviCalculator.CalculateAsync(symbolNames, tableName, connection,
+            jobInfo.ProcessingMessage = "Computing RSI";
+            await EnrichWithCalculatorsAsync(symbols, tableName, connection,
                 startJobParameters.StartUnixDate * 1000, startJobParameters.EndUnixDate * 1000,
                 isCedear ? null : startJobParameters.Exchange, cancellationToken);
-            var rsiTask = RsiCalculator.CalculateAsync(symbolNames, tableName, rsiConnection, cancellationToken: cancellationToken);
-            var bounceTask = BounceCalculator.CalculateAsync(symbolNames, tableName, bounceConnection, targetMap,
-                startJobParameters.StartUnixDate * 1000, startJobParameters.EndUnixDate * 1000,
-                isCedear ? null : startJobParameters.Exchange, cancellationToken);
-
-            await Task.WhenAll(cpviTask, rsiTask, bounceTask);
-
-            var cpviMap = (await cpviTask).ToDictionary(c => c.Symbol, c => c.CPVI);
-            foreach (var s in symbols)
-                if (cpviMap.TryGetValue(s.Symbol, out var cpvi))
-                    s.Volatility = cpvi;
-
-            var rsiMap = (await rsiTask).ToDictionary(r => r.Symbol, r => r.Rsi);
-            foreach (var s in symbols)
-                if (rsiMap.TryGetValue(s.Symbol, out var rsi))
-                    s.Rsi = rsi;
-
-            var bounceMap = (await bounceTask).ToDictionary(b => b.Symbol, b => b.IsBouncing);
-            foreach (var s in symbols)
-                if (bounceMap.TryGetValue(s.Symbol, out var bouncing))
-                    s.IsBouncing = bouncing;
 
             return symbols;
         }
@@ -232,12 +174,8 @@ namespace growy_server.Services
             string inClause = string.Join(", ", paramPlaceholders);
             string exchangeFilter = isCedear ? "" : "AND exchange = @Exchange";
 
-            // Watchlist uses absolute thresholds for IsInMomentum (Option B/B1):
-            // percentageChange >= 20%, smoothness >= 50% (project-owner choice — see
-            // metrics_improvement_plan.md §4.6), max drawdown <= 25%.
-            // Relative top-quintile ranking is skipped — it would be degenerate on small watchlists.
-            // Strategy: docs/momentum_trading_summary.md §6 + §7.
-            // Design: docs/metrics_improvement_plan.md (Option B).
+            // Mirrors the top-growth projection so both paths share ReadSymbolResult.
+            // No MinimumExpectedGrowth threshold — every saved symbol is returned.
             string query = $@"
                 WITH filtered_prices AS (
                   SELECT
@@ -316,10 +254,7 @@ namespace growy_server.Services
                     co.exchange,
                     qm.percent_positive_days,
                     rs.return_std_dev,
-                    dm.max_drawdown,
-                    (g.percentageChange >= 20
-                     AND COALESCE(qm.percent_positive_days, 0) >= 50
-                     AND COALESCE(dm.max_drawdown, 0) <= 25) AS is_in_momentum
+                    dm.max_drawdown
                 FROM growth g
                 LEFT JOIN companies co ON co.symbol = g.symbol
                 LEFT JOIN quality_metrics qm ON qm.symbol = g.symbol
@@ -339,65 +274,12 @@ namespace growy_server.Services
             await using (var reader = await command.ExecuteReaderAsync(cancellationToken))
             {
                 while (await reader.ReadAsync(cancellationToken))
-                {
-                    symbolResults.Add(new SymbolResult
-                    {
-                        Symbol = reader.GetString(0),
-                        PercentageChange = reader.GetDouble(1),
-                        OldestPrice = reader.GetDouble(2),
-                        NewestPrice = reader.GetDouble(3),
-                        TargetPrice = reader.IsDBNull(4) ? 0 : (double)reader.GetDecimal(4),
-                        Eps = reader.IsDBNull(5) ? null : reader.GetDecimal(5),
-                        MarketCapitalization = reader.IsDBNull(6) ? null : reader.GetDecimal(6),
-                        Description = reader.IsDBNull(7) ? null : reader.GetString(7),
-                        Sector = reader.IsDBNull(8) ? null : reader.GetString(8),
-                        Industry = reader.IsDBNull(9) ? null : reader.GetString(9),
-                        CompanyName = reader.IsDBNull(10) ? null : reader.GetString(10),
-                        Exchange = reader.IsDBNull(11) ? null : reader.GetString(11),
-                        PercentPositiveDays = reader.IsDBNull(12) ? 0 : reader.GetDouble(12),
-                        ReturnStdDev = reader.IsDBNull(13) ? 0 : reader.GetDouble(13),
-                        MaxDrawdown = reader.IsDBNull(14) ? 0 : reader.GetDouble(14),
-                        IsInMomentum = !reader.IsDBNull(15) && reader.GetBoolean(15),
-                    });
-                }
+                    symbolResults.Add(ReadSymbolResult(reader));
             }
 
-            if (symbolResults.Count == 0)
-                return symbolResults;
-
-            var symbolNames = symbolResults.Select(x => x.Symbol).ToArray();
-            var targetMap = symbolResults.ToDictionary(s => s.Symbol, s => s.TargetPrice);
-
-            await using var rsiConnection = new NpgsqlConnection(_connectionString);
-            await rsiConnection.OpenAsync(cancellationToken);
-
-            await using var bounceConnection = new NpgsqlConnection(_connectionString);
-            await bounceConnection.OpenAsync(cancellationToken);
-
-            var cpviTask = CpviCalculator.CalculateAsync(symbolNames, tableName, connection,
+            await EnrichWithCalculatorsAsync(symbolResults, tableName, connection,
                 startUnixDate * 1000, endUnixDate * 1000,
                 isCedear ? null : exchange, cancellationToken);
-            var rsiTask = RsiCalculator.CalculateAsync(symbolNames, tableName, rsiConnection, cancellationToken: cancellationToken);
-            var bounceTask = BounceCalculator.CalculateAsync(symbolNames, tableName, bounceConnection, targetMap,
-                startUnixDate * 1000, endUnixDate * 1000,
-                isCedear ? null : exchange, cancellationToken);
-
-            await Task.WhenAll(cpviTask, rsiTask, bounceTask);
-
-            var cpviMap = (await cpviTask).ToDictionary(c => c.Symbol, c => c.CPVI);
-            foreach (var s in symbolResults)
-                if (cpviMap.TryGetValue(s.Symbol, out var cpvi))
-                    s.Volatility = cpvi;
-
-            var rsiMap = (await rsiTask).ToDictionary(r => r.Symbol, r => r.Rsi);
-            foreach (var s in symbolResults)
-                if (rsiMap.TryGetValue(s.Symbol, out var rsi))
-                    s.Rsi = rsi;
-
-            var bounceMap = (await bounceTask).ToDictionary(b => b.Symbol, b => b.IsBouncing);
-            foreach (var s in symbolResults)
-                if (bounceMap.TryGetValue(s.Symbol, out var bouncing))
-                    s.IsBouncing = bouncing;
 
             return symbolResults;
         }
@@ -439,6 +321,65 @@ namespace growy_server.Services
             }
 
             return new SymbolHistoryResult { Symbol = symbol, Prices = prices, Ema20 = EmaCalculator.Calculate20Ema(prices) };
+        }
+
+        // Reads the 15-column projection produced by both the top-growth and watchlist
+        // queries. These ordinals are the contract with each query's final SELECT list —
+        // reordering columns there requires updating them here.
+        private static SymbolResult ReadSymbolResult(NpgsqlDataReader reader) => new()
+        {
+            Symbol = reader.GetString(0),
+            PercentageChange = reader.GetDouble(1),
+            OldestPrice = reader.GetDouble(2),
+            NewestPrice = reader.GetDouble(3),
+            TargetPrice = reader.IsDBNull(4) ? 0 : (double)reader.GetDecimal(4),
+            Eps = reader.IsDBNull(5) ? null : reader.GetDecimal(5),
+            MarketCapitalization = reader.IsDBNull(6) ? null : reader.GetDecimal(6),
+            Description = reader.IsDBNull(7) ? null : reader.GetString(7),
+            Sector = reader.IsDBNull(8) ? null : reader.GetString(8),
+            Industry = reader.IsDBNull(9) ? null : reader.GetString(9),
+            CompanyName = reader.IsDBNull(10) ? null : reader.GetString(10),
+            Exchange = reader.IsDBNull(11) ? null : reader.GetString(11),
+            PercentPositiveDays = reader.IsDBNull(12) ? 0 : reader.GetDouble(12),
+            ReturnStdDev = reader.IsDBNull(13) ? 0 : reader.GetDouble(13),
+            MaxDrawdown = reader.IsDBNull(14) ? 0 : reader.GetDouble(14),
+        };
+
+        // Fills in Rsi and IsBouncing on results already carrying the
+        // SQL-derived metrics. Date bounds are in milliseconds, matching the DB.
+        private async Task EnrichWithCalculatorsAsync(
+            List<SymbolResult> symbols, string tableName, NpgsqlConnection connection,
+            long startUnixMs, long endUnixMs, string? exchange, CancellationToken cancellationToken)
+        {
+            if (symbols.Count == 0)
+                return;
+
+            var symbolNames = symbols.Select(x => x.Symbol).ToArray();
+            var targetMap = symbols.ToDictionary(s => s.Symbol, s => s.TargetPrice);
+
+            await using var rsiConnection = new NpgsqlConnection(_connectionString);
+            await rsiConnection.OpenAsync(cancellationToken);
+
+            // Bounce needs the windowed rows; RSI runs concurrently on its own
+            // connection over full history.
+            var priceSeriesTask = PriceSeriesLoader.LoadAsync(symbolNames, tableName, connection,
+                startUnixMs, endUnixMs, exchange, cancellationToken);
+            var rsiTask = RsiCalculator.CalculateAsync(symbolNames, tableName, rsiConnection,
+                exchange: exchange, cancellationToken: cancellationToken);
+
+            await Task.WhenAll(priceSeriesTask, rsiTask);
+
+            var priceSeries = await priceSeriesTask;
+
+            var rsiMap = (await rsiTask).ToDictionary(r => r.Symbol, r => r.Rsi);
+            foreach (var s in symbols)
+                if (rsiMap.TryGetValue(s.Symbol, out var rsi))
+                    s.Rsi = rsi;
+
+            var bounceMap = BounceCalculator.CalculateFromSeries(priceSeries, targetMap).ToDictionary(b => b.Symbol, b => b.IsBouncing);
+            foreach (var s in symbols)
+                if (bounceMap.TryGetValue(s.Symbol, out var bouncing))
+                    s.IsBouncing = bouncing;
         }
 
         private static (string TableName, bool IsCedear, string ExchangeFilter) ResolveTable(string exchange)

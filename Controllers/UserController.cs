@@ -61,6 +61,15 @@ namespace growy_server.Controllers
             return Ok(new { JobId = jobId });
         }
 
+        [HttpGet("sectors")]
+        public async Task<IActionResult> GetSectors(CancellationToken cancellationToken)
+        {
+            if (!TryGetUserId(out var userId))
+                return Unauthorized();
+
+            return Ok(await watchlistService.GetSectorDistributionAsync(userId, cancellationToken));
+        }
+
         private bool TryGetUserId(out int userId)
         {
             var sub = User.FindFirstValue(JwtRegisteredClaimNames.Sub) ?? User.FindFirstValue(ClaimTypes.NameIdentifier);
