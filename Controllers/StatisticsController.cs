@@ -35,7 +35,6 @@ namespace growy_server.Controllers
             return Ok(jobInfo);
         }
 
-        
         [HttpGet("history/{symbol}")]
         public async Task<IActionResult> GetSymbolHistory(string symbol, [FromQuery] GetSymbolHistoryParameters parameters, CancellationToken cancellationToken)
         {
