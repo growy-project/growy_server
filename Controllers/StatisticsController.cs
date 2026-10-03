@@ -22,13 +22,6 @@ namespace growy_server.Controllers
             }
         }
 
-        [HttpGet("history/{symbol}")]
-        public async Task<IActionResult> GetSymbolHistory(string symbol, [FromQuery] GetSymbolHistoryParameters parameters, CancellationToken cancellationToken)
-        {
-            var result = await statisticsService.GetSymbolHistory(symbol, parameters, cancellationToken);
-            return Ok(result);
-        }
-
         [HttpGet("status/{jobId}")]
         public IActionResult GetJobStatus(Guid jobId)
         {
@@ -40,6 +33,14 @@ namespace growy_server.Controllers
             }
 
             return Ok(jobInfo);
+        }
+
+        
+        [HttpGet("history/{symbol}")]
+        public async Task<IActionResult> GetSymbolHistory(string symbol, [FromQuery] GetSymbolHistoryParameters parameters, CancellationToken cancellationToken)
+        {
+            var result = await statisticsService.GetSymbolHistory(symbol, parameters, cancellationToken);
+            return Ok(result);
         }
     }
 }

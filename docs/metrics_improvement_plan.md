@@ -104,7 +104,9 @@ Beta vs. a benchmark index (S&P 500 for NYSE/NASDAQ, MERVAL for CEDEAR?). Requir
 
 **Open question before committing:** does the database currently hold a benchmark series? If not, this requires adding a loader job similar to `LoadDailyNYSEPrices/`. Defer until that is confirmed.
 
-### 4.6. `IsInMomentum` *(implemented — Option B with project-owner thresholds)*
+### 4.6. `IsInMomentum` *(removed — was implemented as Option B, since reverted)*
+
+> **Status:** `IsInMomentum` was removed from the backend. The `SymbolResult` property, both SQL expressions, and the `ReadSymbolResult` mapping are gone. The `PercentPositiveDays` / `ReturnStdDev` / `MaxDrawdown` columns that fed it remain — they are still exposed as standalone metrics. The design rationale below is kept for reference should the flag be reintroduced.
 
 Boolean flag combining the relative-ranking idea from the literature with the quality gates from §6/§7 of `momentum_trading_summary.md`.
 
@@ -126,7 +128,7 @@ Caveats: the boolean is lossier than the literature's continuous scores, and "in
 ## 5. Existing-column recommendations
 
 - **`Rsi`**: keep, but reframe its purpose. It's a screen for current overbought/oversold state, not a momentum signal. Any UI label or API doc that suggests otherwise should be reworded. Optionally: scope the calculation to the user's analysis window if we want "RSI within the window" rather than "current RSI" — but this is a behaviour change and should be discussed.
-- **`Volatility` (CPVI)**: keep, but pair it with `ReturnStdDev` (§4.2). CPVI is a defensible smoothness proxy; it should not be the only volatility-ish number we expose, and it should not be the basis for risk scaling.
+- **`Volatility` (CPVI)**: ~~keep, but pair it with `ReturnStdDev` (§4.2)~~ — **removed.** The `Volatility` property, `CpviCalculator`, `CPVIResult`, and the CPVI unit tests were deleted from the backend. `ReturnStdDev` (§4.2) is now the only volatility-ish number exposed.
 - **Ranking**: optionally add a `RiskAdjustedScore` sort (`PercentageChange / ReturnStdDev`) once `ReturnStdDev` exists. This is the institutional standard per summary §7. Make it **opt-in via a parameter**, not the default — changing default sort order changes existing behaviour for every consumer.
 
 ---

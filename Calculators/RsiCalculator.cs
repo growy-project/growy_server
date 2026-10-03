@@ -1,37 +1,50 @@
 using growy_server.Models;
 using Npgsql;
+using NpgsqlTypes;
 
 namespace growy_server.Calculators
 {
     public static class RsiCalculator
     {
+        // Bars of warm-up to load per period. Wilder smoothing is recursive, so the seed
+        // never fully disappears — but its influence decays geometrically: after k*period
+        // bars it is ((period-1)/period)^(k*period), which tends to e^-k for any period.
+        // At k = 22 that is ~3e-10, far below the 2 dp the API serialises, so a bounded
+        // tail is indistinguishable from full history while loading far fewer rows.
+        private const int WarmupPeriods = 23;
+
         public static async Task<List<RsiResult>> CalculateAsync(
             string[] symbols, string tableName, NpgsqlConnection connection,
-            int period = 14, CancellationToken cancellationToken = default)
+            int period = 14, string? exchange = null, CancellationToken cancellationToken = default)
         {
             if (symbols.Length == 0)
                 return [];
 
-            var paramPlaceholders = new List<string>();
-            var parameters = new List<NpgsqlParameter>();
+            string exchangeFilter = exchange != null ? "AND t.exchange = @exchange" : "";
 
-            for (int i = 0; i < symbols.Length; i++)
-            {
-                paramPlaceholders.Add($"@p{i}");
-                parameters.Add(new NpgsqlParameter($"@p{i}", symbols[i]));
-            }
-
-            string inClause = string.Join(", ", paramPlaceholders);
-
+            // RSI here is a *current* overbought/oversold reading: the series always ends at
+            // the newest bar, independent of the caller's analysis window. So only the most
+            // recent WarmupPeriods*period bars per symbol are needed. A LATERAL per-symbol
+            // LIMIT is used rather than a shared date cut-off because it stays exact for
+            // thinly-traded and dormant tickers: any symbol holding fewer rows than the limit
+            // simply loads all of them, exactly as the previous full-history load did.
             string sql = $@"
-                SELECT symbol AS Symbol, close_price AS ClosePrice
-                FROM {tableName}
-                WHERE symbol IN ({inClause})
-                ORDER BY symbol, unix_date ASC";
+                SELECT s.symbol AS Symbol, p.close_price AS ClosePrice
+                FROM unnest(@symbols) AS s(symbol)
+                CROSS JOIN LATERAL (
+                    SELECT t.close_price, t.unix_date
+                    FROM {tableName} t
+                    WHERE t.symbol = s.symbol {exchangeFilter}
+                    ORDER BY t.unix_date DESC
+                    LIMIT @warmupBars
+                ) p
+                ORDER BY s.symbol, p.unix_date ASC";
 
             await using var command = new NpgsqlCommand(sql, connection);
-            foreach (var p in parameters)
-                command.Parameters.Add(p);
+            command.Parameters.Add(new NpgsqlParameter("symbols", NpgsqlDbType.Array | NpgsqlDbType.Text) { Value = symbols });
+            command.Parameters.AddWithValue("@warmupBars", period * WarmupPeriods);
+            if (exchange != null)
+                command.Parameters.AddWithValue("@exchange", exchange);
 
             var rows = new List<(string Symbol, double ClosePrice)>();
             await using var reader = await command.ExecuteReaderAsync(cancellationToken);

@@ -1,3 +1,4 @@
+using growy_server.Models;
 using growy_server.Models.DB;
 
 namespace growy_server.Services
@@ -7,6 +8,7 @@ namespace growy_server.Services
         Task AddAsync(int userId, string symbol, string exchange, CancellationToken cancellationToken = default);
         Task<bool> RemoveAsync(int userId, string symbol, string exchange, CancellationToken cancellationToken = default);
         Task<List<UserWatchlistEntity>> GetSymbolsAsync(int userId, CancellationToken cancellationToken = default);
+        Task<List<WatchlistSectorResult>> GetSectorDistributionAsync(int userId, CancellationToken cancellationToken = default);
     }
 
     public class WatchlistLimitReachedException : Exception

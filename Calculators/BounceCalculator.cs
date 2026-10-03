@@ -1,60 +1,19 @@
 using growy_server.Models;
-using Npgsql;
 
 namespace growy_server.Calculators
 {
     public static class BounceCalculator
     {
-        public static async Task<List<BounceResult>> CalculateAsync(
-            string[] symbols, string tableName, NpgsqlConnection connection,
-            IReadOnlyDictionary<string, double> targetPrices,
-            long startDate = 0, long endDate = long.MaxValue, string? exchange = null,
-            CancellationToken cancellationToken = default)
+        // Consumes a series loaded by PriceSeriesLoader.
+        public static List<BounceResult> CalculateFromSeries(
+            IReadOnlyDictionary<string, List<double>> priceSeries,
+            IReadOnlyDictionary<string, double> targetPrices)
         {
-            if (symbols.Length == 0)
-                return [];
-
-            var paramPlaceholders = new List<string>();
-            var parameters = new List<NpgsqlParameter>();
-
-            for (int i = 0; i < symbols.Length; i++)
-            {
-                paramPlaceholders.Add($"@p{i}");
-                parameters.Add(new NpgsqlParameter($"@p{i}", symbols[i]));
-            }
-
-            string inClause = string.Join(", ", paramPlaceholders);
-            string dateFilter = startDate > 0 ? "AND unix_date BETWEEN @startDate AND @endDate" : "";
-            string exchangeFilter = exchange != null ? "AND exchange = @exchange" : "";
-
-            string sql = $@"
-                SELECT symbol AS Symbol, close_price AS ClosePrice
-                FROM {tableName}
-                WHERE symbol IN ({inClause}) {dateFilter} {exchangeFilter}
-                ORDER BY symbol, unix_date ASC";
-
-            await using var command = new NpgsqlCommand(sql, connection);
-            foreach (var p in parameters)
-                command.Parameters.Add(p);
-            if (startDate > 0)
-            {
-                command.Parameters.AddWithValue("@startDate", startDate);
-                command.Parameters.AddWithValue("@endDate", endDate);
-            }
-            if (exchange != null)
-                command.Parameters.AddWithValue("@exchange", exchange);
-
-            var rows = new List<(string Symbol, double ClosePrice)>();
-            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-            while (await reader.ReadAsync(cancellationToken))
-                rows.Add((reader.GetString(0), reader.GetDouble(1)));
-
             var results = new List<BounceResult>();
-            foreach (var group in rows.GroupBy(r => r.Symbol))
+            foreach (var entry in priceSeries)
             {
-                var prices = group.Select(r => r.ClosePrice).ToList();
-                double targetPrice = targetPrices.TryGetValue(group.Key, out var t) ? t : 0;
-                results.Add(new BounceResult { Symbol = group.Key, IsBouncing = ComputeIsBouncing(prices, targetPrice) });
+                double targetPrice = targetPrices.TryGetValue(entry.Key, out var t) ? t : 0;
+                results.Add(new BounceResult { Symbol = entry.Key, IsBouncing = ComputeIsBouncing(entry.Value, targetPrice) });
             }
 
             return results;
