@@ -1,4 +1,5 @@
 using growy_server.Models;
+using growy_server.Strategies;
 using Microsoft.Extensions.Caching.Memory;
 
 namespace growy_server.Services
@@ -19,8 +20,9 @@ namespace growy_server.Services
 
             RunJob(jobInfo, async (scope, ji, ct) =>
             {
-                var statisticsService = scope.ServiceProvider.GetRequiredService<IStatisticsService>();
-                return await statisticsService.GetTopGrowth(parameters, ji, ct);
+                var momentum = scope.ServiceProvider.GetRequiredService<IScreeningStrategy<MomentumRequest, SymbolResult>>();
+                var request = new MomentumRequest(parameters.Exchange, parameters.StartUnixDate, parameters.EndUnixDate, parameters.MinimumExpectedGrowth);
+                return await momentum.ScreenAsync(request, new JobProgress(ji), ct);
             });
 
             return jobInfo.JobId;
@@ -35,12 +37,25 @@ namespace growy_server.Services
             RunJob(jobInfo, async (scope, ji, ct) =>
             {
                 var watchlistService = scope.ServiceProvider.GetRequiredService<IWatchlistService>();
-                var statisticsService = scope.ServiceProvider.GetRequiredService<IStatisticsService>();
+                var momentum = scope.ServiceProvider.GetRequiredService<IScreeningStrategy<MomentumRequest, SymbolResult>>();
 
                 var entries = await watchlistService.GetSymbolsAsync(parameters.UserId, ct);
-                var pairs = entries.Select(e => (e.Symbol, e.Exchange)).ToList();
+                if (entries.Count == 0)
+                    return new List<SymbolResult>();
 
-                return await statisticsService.GetWatchlistStatistics(pairs, parameters.StartUnixDate, parameters.EndUnixDate, ji, ct);
+                ji.ProcessingMessage = $"Computing statistics for {entries.Count} watchlist symbols";
+                var progress = new JobProgress(ji);
+
+                // One query per exchange, since each exchange may live in a different price table.
+                var results = new List<SymbolResult>();
+                foreach (var group in entries.GroupBy(e => e.Exchange))
+                {
+                    var symbols = group.Select(e => e.Symbol).Distinct().ToArray();
+                    var request = new MomentumRequest(group.Key, parameters.StartUnixDate, parameters.EndUnixDate, Symbols: symbols);
+                    results.AddRange(await momentum.ScreenAsync(request, progress, ct));
+                }
+
+                return results.OrderByDescending(r => r.PercentageChange).ToList();
             });
 
             return jobInfo.JobId;
@@ -129,6 +144,11 @@ namespace growy_server.Services
             }
         }
 
-
+        // Reports strategy progress straight onto the polled job. Progress<T> would post
+        // to the thread pool and could apply messages out of order.
+        private sealed class JobProgress(StatisticJobInfo jobInfo) : IProgress<string>
+        {
+            public void Report(string value) => jobInfo.ProcessingMessage = value;
+        }
     }
 }
