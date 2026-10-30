@@ -21,7 +21,7 @@ dotnet run                              # Start API → https://localhost:7138 (
 dotnet build
 dotnet ef migrations add <Name>         # Requires dotnet-ef tool installed globally
 dotnet ef database update
-dotnet test                             # Run all tests (project at tests/growy_server.Tests/)
+dotnet test tests/growy_server.Tests     # Run all tests (plain `dotnet test` here builds the API project only and runs nothing)
 dotnet test --filter "FullyQualifiedName~MyTest"   # Run a single test
 ```
 
@@ -31,13 +31,16 @@ dotnet test --filter "FullyQualifiedName~MyTest"   # Run a single test
 
 - `IStatisticsJobService` → **Singleton** (`StatisticsJobService`): holds an in-memory `MemoryCache` of running/completed jobs. Uses `IServiceScopeFactory` to resolve scoped services inside background tasks.
 - `IStatisticsService`, `ISymbolService`, `IUserService`, `IWatchlistService` → **Scoped**
+- `IScreeningStrategy<MomentumRequest, SymbolResult>` → **Scoped** (`MomentumStrategy`)
 - `IEmailService` → **Transient**
 
 ### Background Job System (`StatisticsJobService`)
 
 The singleton job service runs two job kinds, both fire-and-forget `Task.Run` with progress reporting:
-- `StartJob(StartStatisticJobParameters)` — kicked off by `POST /statistics/start`, computes top-growth stocks.
-- `StartWatchlistJob(StartWatchlistJobParameters)` — kicked off by `GET /my-list`, evaluates a user's watchlist over a date range.
+- `StartJob(StartStatisticJobParameters)` — kicked off by `POST /statistics/start`, runs `MomentumStrategy` over a whole exchange.
+- `StartWatchlistJob(StartWatchlistJobParameters)` — kicked off by `GET /my-list`, groups the user's watchlist by exchange and runs `MomentumStrategy` once per group with a symbol list, then sorts by growth.
+
+Strategies report phase text through `IProgress<string>`; the job service's `JobProgress` writes it synchronously to `ProcessingMessage`.
 
 Both share the same status surface: jobs are tracked in `MemoryCache` with a 5-minute sliding expiration and polled via `GET /statistics/status/{jobId}` for `PercentComplete`, `Status`, and `Result`. Jobs auto-clear 5 minutes after the last status check.
 
@@ -55,9 +58,11 @@ Both share the same status surface: jobs are tracked in `MemoryCache` with a 5-m
 
 The `exchange` query parameter distinguishes stock types. `"CEDEAR"` hits `symbol_date_price_cedears` table; all other values hit `symbol_date_price` and filter by exchange column.
 
-### Statistics Pipeline (`StatisticsService`)
+### Screening Strategies (`Strategies/`)
 
-`GetTopGrowth` and `GetWatchlistGroupAsync` share the same two-query pattern:
+Screeners implement `IScreeningStrategy<TRequest, TResult>` (each strategy has its own request/result shape; the non-generic `IScreeningStrategy` base carries a `Key` for selecting one later). New screeners (e.g. Bouncy) go here, registered `AddScoped`. `StatisticsService` now only serves `GetSymbolHistory`; `PriceTables.Resolve` maps an exchange to its price table for both.
+
+`MomentumStrategy.ScreenAsync(MomentumRequest)` serves both the exchange-wide scan and the watchlist with one query built by `BuildQuery`: an optional symbol filter (`symbol = ANY(@Symbols)`, watchlist) and an optional growth threshold (`percentageChange > @Threshold`, exchange scan). It follows a two-query pattern:
 
 1. **Main CTE query** — a single PostgreSQL query computes growth, smoothness (`percent_positive_days`), `return_std_dev`, and `max_drawdown` for all symbols in one pass. Returns one row per symbol (a 15-column projection read by `ReadSymbolResult`).
 2. **Price series + RSI** — two parallel loads on separate connections: `PriceSeriesLoader` fetches the windowed close prices that feed `BounceCalculator`, while `RsiCalculator` loads full history. Run concurrently via `Task.WhenAll`.
@@ -79,7 +84,7 @@ New calculators should mirror the `BounceCalculator` pattern: consume a `PriceSe
 
 `GrowyDbContext` exposes: `SymbolDatePrices`, `SymbolDatePriceCedears`, `Users`, `Companies`, `UserWatchlist`, `EmailMessages`.
 
-Note: this repo has **no EF Migrations folder** — the DB schema is managed manually against the Postgres dump. Entities are mapped with data annotations, but new tables must be created with a hand-written DDL script (see `docs/create-email-messages-table.sql`), not `dotnet ef migrations`.
+Note: this repo has **no EF Migrations folder** — the DB schema is managed manually against the Postgres dump. Entities are mapped with data annotations, but new tables must be created with a hand-written DDL script in `docs/sql/` (numbered, idempotent — e.g. `docs/sql/001_bouncy_schema.sql`, which creates the Bouncy tables `analyst_target_snapshots`, `analyst_actions`, `bounce_signals`, the view `bounce_signals_v`, and the `volume` column on both price tables), not `dotnet ef migrations`.
 
 ### Auth
 

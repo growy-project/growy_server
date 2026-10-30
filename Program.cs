@@ -1,6 +1,8 @@
 using System.Text;
 using growy_server.Data;
+using growy_server.Models;
 using growy_server.Services;
+using growy_server.Strategies;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
@@ -49,6 +51,7 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
 builder.Services.AddDbContext<GrowyDbContext>(options =>
     options.UseNpgsql(builder.Configuration.GetConnectionString("DefaultConnection")));
 builder.Services.AddScoped<IStatisticsService, StatisticsService>();
+builder.Services.AddScoped<IScreeningStrategy<MomentumRequest, SymbolResult>, MomentumStrategy>();
 builder.Services.AddScoped<ISymbolService, SymbolService>();
 
 builder.Services.AddSingleton<IStatisticsJobService, StatisticsJobService>();
