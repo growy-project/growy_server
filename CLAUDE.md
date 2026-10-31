@@ -80,6 +80,12 @@ Results are merged back onto `List<SymbolResult>` by symbol key after `Task.When
 
 New calculators should mirror the `BounceCalculator` pattern: consume a `PriceSeriesLoader` series (or do their own DB load) via a `CalculateFromSeries`/`CalculateAsync` entry point, with the math in a pure `Compute*` method that unit tests target.
 
+### Bouncy signals
+
+`bounce_signals` is **written by CompanyDataUpdater** (`BouncySignalsStep`, right after `FundamentalsStep`; backfill via `dotnet run -- bouncy-backfill` there). This API only reads it — `GET /bouncy` is planned (`docs/BouncyStrategyPlanning.md` §6), with read-time filters for max drawdown (default 60), min market cap (default $20B; `0` = any, unknowns included), `companies.active`, and CEDEAR (US signals limited to symbols with recent `symbol_date_price_cedears` rows). `docs/bouncy_backtest.sql` is the forward-return study over the backfilled rows.
+
+`Calculators/WilderRsi.cs` (streaming Wilder RSI used by `RsiCalculator.ComputeRsi`) has an identical copy in CompanyDataUpdater, so Bouncy's stored RSI state matches the Momentum grid. `WilderRsiTests` pins it to the original implementation in both repos — change one, change both.
+
 ### DbContext Entities
 
 `GrowyDbContext` exposes: `SymbolDatePrices`, `SymbolDatePriceCedears`, `Users`, `Companies`, `UserWatchlist`, `EmailMessages`.

@@ -69,36 +69,11 @@ namespace growy_server.Calculators
             if (closePricesOrderedByDate.Count < period + 1)
                 return null;
 
-            int count = closePricesOrderedByDate.Count;
-            var gains = new double[count - 1];
-            var losses = new double[count - 1];
+            var rsi = new WilderRsi(period);
+            foreach (var close in closePricesOrderedByDate)
+                rsi.Add(close);
 
-            for (int i = 0; i < count - 1; i++)
-            {
-                double change = closePricesOrderedByDate[i + 1] - closePricesOrderedByDate[i];
-                gains[i] = change > 0 ? change : 0;
-                losses[i] = change < 0 ? -change : 0;
-            }
-
-            double avgGain = 0;
-            double avgLoss = 0;
-
-            for (int i = 0; i < period; i++)
-            {
-                avgGain += gains[i];
-                avgLoss += losses[i];
-            }
-            avgGain /= period;
-            avgLoss /= period;
-
-            for (int i = period; i < gains.Length; i++)
-            {
-                avgGain = (avgGain * (period - 1) + gains[i]) / period;
-                avgLoss = (avgLoss * (period - 1) + losses[i]) / period;
-            }
-
-            double rsi = avgLoss == 0 ? 100 : 100 - (100 / (1 + avgGain / avgLoss));
-            return new RsiResult { Symbol = symbol, Rsi = Math.Round(rsi, 2) };
+            return new RsiResult { Symbol = symbol, Rsi = Math.Round(rsi.Value, 2) };
         }
     }
 }
